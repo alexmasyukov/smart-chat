@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "alerts-app": {
+      "command": "/Users/alex/my-pro/test/.venv/bin/python",
+      "args": [
+        "/Users/alex/my-pro/test/mcp_server.py"
+      ]
+    }
+  }
+}
