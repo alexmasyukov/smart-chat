@@ -42,7 +42,7 @@
 </head>
 <body>
   <h1>Галерея петов</h1>
-  <div class="sub">10 наземных персонажей. У всех один набор действий — переключай кнопками, анимация применяется ко всем сразу.</div>
+  <div class="sub">12 персонажей. У всех один набор действий — переключай кнопками, анимация применяется ко всем сразу.</div>
 
   <div class="actions" id="actions"></div>
   <div class="grid" id="grid"></div>
@@ -137,7 +137,36 @@ const RAW = [
     palette: { o:"#5a2a2a", t:"#e8d8b0", c:"#e0473b", s:"#ffffff", p:"#5a2a2a", m:"#5a2a2a" } },
 ];
 
-const PETS = RAW.map(buildPet);
+// ---------- кастомные петы со своими кадрами (слайм, призрак) ----------
+function over(base, ovr) { const rows = base.slice(); for (const k in ovr) rows[+k] = ovr[k]; return rows; }
+
+const SLIME_BASE = [
+  "................", "................", "................", "................",
+  ".....oooooo.....", "....oggggggo....", "...oggggggggo...", "...ogwwggwwgo...",
+  "...ogwwggwwgo...", "...oggggggggo...", "...oggmmmmggo...", "...oggggggggo...",
+  "..oggggggggggo..", "..oooooooooooo..", "................", "................",
+];
+const GHOST_BASE = [
+  "................", "................", ".....oooooo.....", "....oggggggo....",
+  "...oggggggggo...", "...oggggggggo...", "...ogwwggwwgo...", "...ogwwggwwgo...",
+  "...oggggggggo...", "...oggmmmmggo...", "...oggggggggo...", "...oggggggggo...",
+  "..oggggggggggo..", "..oooooooooooo..", "................", "................",
+];
+
+const CUSTOM = [
+  { name: "Слайм", palette: { o:"#14361f", g:"#7be07b", w:"#ffffff", m:"#14361f" },
+    base: SLIME_BASE,
+    blink: over(SLIME_BASE, { 7:"...oggggggggo...", 8:"...ogooggoogo..." }),
+    talkOpen: over(SLIME_BASE, { 10:"...oggmmmmggo...", 11:"...oggmmmmggo..." }),
+    talkClosed: over(SLIME_BASE, { 10:"...ogggmmgggo..." }) },
+  { name: "Призрак", palette: { o:"#2a2440", g:"#ececf6", w:"#2a2440", m:"#2a2440" },
+    base: GHOST_BASE,
+    blink: over(GHOST_BASE, { 6:"...oggggggggo...", 7:"...ogooggoogo..." }),
+    talkOpen: over(GHOST_BASE, { 9:"...oggmmmmggo...", 10:"...oggmmmmggo..." }),
+    talkClosed: over(GHOST_BASE, { 9:"...ogggmmgggo..." }) },
+];
+
+const PETS = RAW.map(buildPet).concat(CUSTOM);
 
 // ---------- действия ----------
 const ACTIONS = [
