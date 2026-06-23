@@ -167,6 +167,7 @@ final class RootView: NSView {
     private var bubbleText: String = ""   // пусто, пока модель не ответит
     private var toolBadge: String?
     private var toolBadgeUntil: Int = 0
+    private var dismissAtTick: Int = 0   // когда скрыть облако (0 = не скрывать)
     private var placed = false   // окно уже спозиционировано хотя бы раз
 
     private let closeButton = NSButton()
@@ -228,6 +229,7 @@ final class RootView: NSView {
             state = .idle         // ничего не показываем — ждём ответа модели
         case "prompt":
             bubbleText = ""       // новый ход — чистим пузырь
+            dismissAtTick = 0     // отменяем плановое скрытие
             state = .thinking
         case "state":
             switch e["value"] as? String {
@@ -239,6 +241,7 @@ final class RootView: NSView {
             }
         case "token":
             if let t = e["text"] as? String { bubbleText += t }
+            dismissAtTick = 0     // пока печатает — не скрываем
         case "tool":
             if (e["phase"] as? String) == "start", let name = e["name"] as? String {
                 let short = name.components(separatedBy: "__").last ?? name
@@ -247,9 +250,11 @@ final class RootView: NSView {
             }
         case "done":
             state = .idle
+            scheduleDismiss()     // прячем облако через паузу
         case "error":
             bubbleText = "⚠️ " + (e["message"] as? String ?? "ошибка")
             state = .idle
+            scheduleDismiss()
         case "disconnected":
             // тихо ждём переподключения, ничего не меняем
             break
@@ -320,9 +325,20 @@ final class RootView: NSView {
 
     // MARK: анимация
 
+    // Скрываем облако через 4 секунды после ответа.
+    private func scheduleDismiss() {
+        dismissAtTick = tick + Int(4.0 / 0.09)
+    }
+
     private func tickAnimation() {
         tick += 1
         if let _ = toolBadge, tick > toolBadgeUntil { toolBadge = nil }
+        if dismissAtTick != 0 && tick >= dismissAtTick {
+            dismissAtTick = 0
+            bubbleText = ""
+            relayout()            // облако исчезает, остаётся только персонаж
+            return
+        }
         needsDisplay = true
     }
 
