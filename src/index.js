@@ -48,27 +48,52 @@ async function ensureServer() {
   throw new Error("Сервер не поднялся за отведённое время.");
 }
 
-async function getModels() {
-  const r = await fetch(`${BASE}/api/models`);
-  return r.json(); // { list, current }
+async function getModels(provider) {
+  const r = await fetch(`${BASE}/api/models?provider=${provider}`);
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data; // { provider, list }
 }
 
-async function pickModel(current) {
-  const { list, current: serverCurrent } = await getModels();
-  if (!list || list.length === 0) throw new Error("API не вернул моделей.");
+async function getProviders() {
+  const r = await fetch(`${BASE}/api/providers`);
+  return r.json(); // { providers: [{id,label,available}] }
+}
+
+async function pickProvider(current) {
+  const { providers } = await getProviders();
+  const available = providers.filter((p) => p.available);
+  if (available.length === 0) {
+    throw new Error("Нет доступных провайдеров (проверь OPENAI_TOKEN и LM Studio).");
+  }
+  if (available.length === 1) return available[0].id;
   return select({
-    message: "Выберите модель:",
+    message: "Провайдер:",
+    choices: providers.map((p) => ({
+      name: p.available ? p.label : `${p.label} — недоступен`,
+      value: p.id,
+      disabled: !p.available,
+    })),
+    default: current || available[0].id,
+  });
+}
+
+async function pickModel(provider, current) {
+  const { list } = await getModels(provider);
+  if (!list || list.length === 0) throw new Error(`У провайдера ${provider} нет моделей.`);
+  return select({
+    message: "Модель:",
     choices: list.map((id) => ({ name: id, value: id })),
-    default: current || serverCurrent || list[0],
+    default: current && list.includes(current) ? current : list[0],
   });
 }
 
 // POST /api/chat и разбор SSE-потока с колбэками.
-async function streamChat(text, model, { onState, onToken, onTool }) {
+async function streamChat(text, provider, model, { onState, onToken, onTool }) {
   const resp = await fetch(`${BASE}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify({ text, model }),
+    body: JSON.stringify({ text, provider, model }),
   });
   if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
 
@@ -105,12 +130,14 @@ async function streamChat(text, model, { onState, onToken, onTool }) {
 async function main() {
   console.log("\x1b[1m=== smart-chat ===\x1b[0m");
   await ensureServer();
+  console.log(`Сервер: ${BASE}`);
 
-  const { list } = await getModels();
-  console.log(`Моделей доступно: ${list.length}. Сервер: ${BASE}`);
-  let model = await pickModel();
-  console.log(`\nМодель: \x1b[36m${model}\x1b[0m`);
-  console.log("Команды: /model — сменить модель, /clear — очистить историю, /exit — выход.\n");
+  let provider = await pickProvider();
+  let model = await pickModel(provider);
+  console.log(`\nПровайдер: \x1b[35m${provider}\x1b[0m  Модель: \x1b[36m${model}\x1b[0m`);
+  console.log(
+    "Команды: /provider — сменить провайдера, /model — сменить модель, /clear — очистить, /exit — выход.\n"
+  );
 
   while (true) {
     let userText;
@@ -128,15 +155,21 @@ async function main() {
       console.log("История очищена.\n");
       continue;
     }
+    if (trimmed === "/provider") {
+      provider = await pickProvider(provider);
+      model = await pickModel(provider);
+      console.log(`Провайдер: \x1b[35m${provider}\x1b[0m  Модель: \x1b[36m${model}\x1b[0m\n`);
+      continue;
+    }
     if (trimmed === "/model") {
-      model = await pickModel(model);
+      model = await pickModel(provider, model);
       console.log(`Модель: \x1b[36m${model}\x1b[0m\n`);
       continue;
     }
 
     let wroteToken = false;
     try {
-      await streamChat(trimmed, model, {
+      await streamChat(trimmed, provider, model, {
         onState: (s) => {
           if (s === "talking" && !wroteToken) process.stdout.write("\x1b[32mБот:\x1b[0m ");
         },

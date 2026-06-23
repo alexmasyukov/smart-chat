@@ -12,8 +12,9 @@ import http from "node:http";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { McpHub } from "./mcp.js";
-import { listTextModels } from "./models.js";
+import { listModels } from "./models.js";
 import { SYSTEM_PROMPT, runChatTurn } from "./chat.js";
+import { PROVIDERS, getClient, LMSTUDIO_URL } from "./clients.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = join(__dirname, "..", "mcp.config.json");
@@ -22,9 +23,17 @@ const HOST = process.env.HOST || "127.0.0.1";
 
 const hub = new McpHub();
 const messages = [{ role: "system", content: SYSTEM_PROMPT }];
-let model = null;
-let models = [];
 let busy = false;
+
+// Доступность локального провайдера (LM Studio) — быстрый probe.
+async function localAvailable() {
+  try {
+    const r = await fetch(`${LMSTUDIO_URL}/models`, { signal: AbortSignal.timeout(1500) });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
 
 function json(res, code, obj) {
   const body = JSON.stringify(obj);
@@ -86,7 +95,7 @@ setInterval(() => {
 }, 20000).unref();
 
 async function handleChat(req, res) {
-  const { text, model: reqModel } = await readBody(req);
+  const { text, model: reqModel, provider: reqProvider } = await readBody(req);
   sseStart(res);
 
   if (busy) {
@@ -97,9 +106,21 @@ async function handleChat(req, res) {
     sse(res, "error", { message: "Пустой запрос." });
     return res.end();
   }
+  if (!reqModel) {
+    sse(res, "error", { message: "Не указана модель." });
+    return res.end();
+  }
+
+  const provider = reqProvider || "cloud";
+  let client;
+  try {
+    client = getClient(provider);
+  } catch (err) {
+    sse(res, "error", { message: err.message });
+    return res.end();
+  }
 
   busy = true;
-  if (reqModel) model = reqModel;
   messages.push({ role: "user", content: text });
 
   let closed = false;
@@ -116,7 +137,9 @@ async function handleChat(req, res) {
 
   try {
     await runChatTurn({
-      model,
+      client,
+      provider,
+      model: reqModel,
       hub,
       messages,
       onState: (value) => fan("state", { value }),
@@ -141,8 +164,27 @@ const server = http.createServer(async (req, res) => {
   const path = url.pathname;
 
   if (method === "GET" && path === "/api/health") return json(res, 200, { ok: true });
-  if (method === "GET" && path === "/api/models")
-    return json(res, 200, { list: models, current: model });
+
+  if (method === "GET" && path === "/api/providers") {
+    const local = await localAvailable();
+    return json(res, 200, {
+      providers: [
+        { id: "cloud", label: PROVIDERS.cloud.label, available: !!PROVIDERS.cloud.client },
+        { id: "local", label: PROVIDERS.local.label, available: local },
+      ],
+    });
+  }
+
+  if (method === "GET" && path === "/api/models") {
+    const provider = url.searchParams.get("provider") || "cloud";
+    try {
+      const list = await listModels(provider);
+      return json(res, 200, { provider, list });
+    } catch (err) {
+      return json(res, 502, { provider, list: [], error: err.message });
+    }
+  }
+
   if (method === "GET" && path === "/api/tools")
     return json(res, 200, { list: hub.openaiTools.map((t) => t.function.name) });
   if (method === "POST" && path === "/api/reset") {
@@ -154,7 +196,7 @@ const server = http.createServer(async (req, res) => {
   // Поток событий для облака-зеркала (только чтение).
   if (method === "GET" && path === "/api/events") {
     sseStart(res);
-    sse(res, "hello", { model, tools: hub.openaiTools.length });
+    sse(res, "hello", { tools: hub.openaiTools.length });
     listeners.add(res);
     req.on("close", () => listeners.delete(res));
     return;
@@ -165,16 +207,11 @@ const server = http.createServer(async (req, res) => {
 
 async function boot() {
   await hub.loadFromConfig(CONFIG_PATH);
-  models = await listTextModels();
-  model =
-    models.find((m) => m === "gpt-5-mini") ||
-    models.find((m) => m.includes("gpt-5-mini")) ||
-    models[0];
 
   server.listen(PORT, HOST, () => {
     // Лог в stderr — на случай если кто-то читает stdout как данные.
     console.error(`smart-chat API слушает http://${HOST}:${PORT}`);
-    console.error(`  модель по умолчанию: ${model}`);
+    console.error(`  провайдеры: cloud${PROVIDERS.cloud.client ? "" : " (нет ключа)"}, local (${LMSTUDIO_URL})`);
     console.error(`  инструментов MCP: ${hub.openaiTools.length}`);
   });
 }

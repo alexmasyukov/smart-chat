@@ -1,5 +1,3 @@
-import { openai } from "./openai.js";
-
 // Системный промпт: модель работает диспетчером инструментов ALERT-APP
 // и понимает запрос по смыслу, а не по точным словам.
 export const SYSTEM_PROMPT = `Ты — диспетчер вызова инструментов MCP-приложения «ALERT-APP».
@@ -35,16 +33,17 @@ export function reasoningParams(model) {
 // Один ход диалога: стримит ответ и крутит цикл вызова инструментов, пока он есть.
 // Мутирует messages (добавляет ответы ассистента и результаты инструментов).
 // Колбэки: onState(state), onToken(text), onTool({name, args, phase, result}).
-export async function runChatTurn({ model, hub, messages, onState, onToken, onTool }) {
+export async function runChatTurn({ client, provider, model, hub, messages, onState, onToken, onTool }) {
   while (true) {
     onState?.("thinking");
 
-    const stream = await openai.chat.completions.create({
+    const stream = await client.chat.completions.create({
       model,
       messages,
       tools: hub.hasTools() ? hub.openaiTools : undefined,
       stream: true,
-      ...reasoningParams(model),
+      // reasoning_effort шлём только облачным моделям OpenAI
+      ...(provider === "cloud" ? reasoningParams(model) : {}),
     });
 
     let content = "";
