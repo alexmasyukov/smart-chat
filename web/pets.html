@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>smart-chat · галерея петов</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: #0e1116; color: #e8edf2; min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center; gap: 22px; padding: 28px 16px 60px;
+  }
+  h1 { font-size: 20px; font-weight: 700; margin: 0; letter-spacing: .3px; }
+  .sub { color: #8b97a5; font-size: 13px; margin-top: -14px; }
+
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  .actions button {
+    appearance: none; border: 1px solid #2a3340; background: #161c24; color: #cdd6e0;
+    padding: 9px 16px; border-radius: 10px; font-size: 14px; cursor: pointer; transition: .12s;
+  }
+  .actions button:hover { border-color: #3d4b5c; }
+  .actions button.active {
+    background: #1f6feb22; border-color: #4493f8; color: #cfe5ff;
+    box-shadow: 0 0 0 1px #4493f855 inset;
+  }
+
+  .grid {
+    display: grid; gap: 18px;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    width: 100%; max-width: 880px;
+  }
+  .card {
+    background: #131922; border: 1px solid #222b36; border-radius: 16px;
+    padding: 14px 10px 12px; display: flex; flex-direction: column; align-items: center; gap: 8px;
+  }
+  .card canvas { image-rendering: pixelated; border-radius: 10px; background: #0b0f15; }
+  .card .name { font-size: 13px; color: #aeb9c5; }
+  .hint { color: #6b7785; font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1>Галерея петов</h1>
+  <div class="sub">У всех один набор действий — переключай кнопками, анимация применяется ко всем сразу.</div>
+
+  <div class="actions" id="actions"></div>
+  <div class="grid" id="grid"></div>
+  <div class="hint">Те же состояния, что у десктоп-пета: покой (моргание), думает (•••), говорит (рот), колдует (искры + поскок).</div>
+
+<script>
+// ---------- утилита: построить кадр из base с переопределением строк ----------
+function over(base, ovr) {
+  const rows = base.slice();
+  for (const k in ovr) rows[+k] = ovr[k];
+  return rows;
+}
+
+// ---------- определения петов (16×16) ----------
+const ROBOT_BASE = [
+  "................",
+  ".......aa.......",
+  ".......oo.......",
+  "...oooooooooo...",
+  "...obbbbbbbbo...",
+  "...obaabbaabo...",
+  "...obaabbaabo...",
+  "...obbbbbbbbo...",
+  "...obbbbbbbbo...",
+  "...obbmmmmbbo...",
+  "...obbbbbbbbo...",
+  "...obbbbbbbbo...",
+  "...oddddddddo...",
+  "...oooooooooo...",
+  "....oo..oo......",
+  "................",
+];
+const SLIME_BASE = [
+  "................",
+  "................",
+  "................",
+  "................",
+  ".....oooooo.....",
+  "....oggggggo....",
+  "...oggggggggo...",
+  "...ogwwggwwgo...",
+  "...ogwwggwwgo...",
+  "...oggggggggo...",
+  "...oggmmmmggo...",
+  "...oggggggggo...",
+  "..oggggggggggo..",
+  "..oooooooooooo..",
+  "................",
+  "................",
+];
+const GHOST_BASE = [
+  "................",
+  "................",
+  ".....oooooo.....",
+  "....oggggggo....",
+  "...oggggggggo...",
+  "...oggggggggo...",
+  "...ogwwggwwgo...",
+  "...ogwwggwwgo...",
+  "...oggggggggo...",
+  "...oggmmmmggo...",
+  "...oggggggggo...",
+  "...oggggggggo...",
+  "..oggggggggggo..",
+  "..oooooooooooo..",
+  "................",
+  "................",
+];
+const CHICK_BASE = [
+  "................",
+  "................",
+  ".....oooooo.....",
+  "....oyyyyyyo....",
+  "...oyyyyyyyyo...",
+  "...oywwyywwyo...",
+  "...oywwyywwyo...",
+  "...oyyykkyyyo...",
+  "...oyyyyyyyyo...",
+  "...oyyyyyyyyo...",
+  "...oyyyyyyyyo...",
+  "..oyyyyyyyyyyo..",
+  "..oooooooooooo..",
+  "....o.o..o.o....",
+  "................",
+  "................",
+];
+
+const PETS = [
+  {
+    name: "Робот",
+    palette: { o:"#16222e", b:"#80ccff", d:"#3f9fe0", a:"#baf7ff", m:"#16222e", s:"#fff3a6" },
+    base: ROBOT_BASE,
+    blink: over(ROBOT_BASE, { 5:"...obbbbbbbbo...", 6:"...oboobboobo..." }),
+    talkOpen: over(ROBOT_BASE, { 9:"...obbmmmmbbo...", 10:"...obbmmmmbbo..." }),
+    talkClosed: over(ROBOT_BASE, { 9:"...obbbmmbbbo..." }),
+  },
+  {
+    name: "Слайм",
+    palette: { o:"#14361f", g:"#7be07b", G:"#46b35a", w:"#ffffff", m:"#14361f" },
+    base: SLIME_BASE,
+    blink: over(SLIME_BASE, { 7:"...oggggggggo...", 8:"...ogooggoogo..." }),
+    talkOpen: over(SLIME_BASE, { 10:"...oggmmmmggo...", 11:"...oggmmmmggo..." }),
+    talkClosed: over(SLIME_BASE, { 10:"...ogggmmgggo..." }),
+  },
+  {
+    name: "Призрак",
+    palette: { o:"#2a2440", g:"#ececf6", G:"#c2c2da", w:"#2a2440", m:"#2a2440" },
+    base: GHOST_BASE,
+    blink: over(GHOST_BASE, { 6:"...oggggggggo...", 7:"...ogooggoogo..." }),
+    talkOpen: over(GHOST_BASE, { 9:"...oggmmmmggo...", 10:"...oggmmmmggo..." }),
+    talkClosed: over(GHOST_BASE, { 9:"...ogggmmgggo..." }),
+  },
+  {
+    name: "Цыплёнок",
+    palette: { o:"#6b4e16", y:"#ffe05a", Y:"#f4c430", w:"#ffffff", k:"#ff9a3c" },
+    base: CHICK_BASE,
+    blink: over(CHICK_BASE, { 5:"...oyyyyyyyyo...", 6:"...oyooyyooyo..." }),
+    talkOpen: over(CHICK_BASE, { 7:"...oyykkkkyyo...", 8:"...oyyykkyyyo..." }),
+    talkClosed: over(CHICK_BASE, { 7:"...oyyykkyyyo..." }),
+  },
+];
+
+// ---------- действия ----------
+const ACTIONS = [
+  { id: "idle",     label: "Покой" },
+  { id: "thinking", label: "Думает" },
+  { id: "talking",  label: "Говорит" },
+  { id: "working",  label: "Колдует" },
+];
+let action = "idle";
+let tick = 0;
+
+// выбор кадра по действию (логика как в нативном пете)
+function frameFor(pet) {
+  switch (action) {
+    case "talking": return (Math.floor(tick / 2) % 2 === 0) ? pet.talkOpen : pet.talkClosed;
+    case "idle":    return (tick % 32 < 2) ? pet.blink : pet.base;
+    default:        return pet.base; // thinking / working — базовый кадр + оверлеи
+  }
+}
+function bobFor() {
+  switch (action) {
+    case "working":  return Math.abs((tick % 4) - 2) * 2;            // быстрый поскок
+    case "thinking": return Math.sin(tick * 0.4) * 1.5;
+    default:         return Math.sin(tick * 0.22) * 2;               // спокойное дыхание
+  }
+}
+
+const SCALE = 8, GRID = 16;
+const CW = 160, CH = 168, OX = (CW - GRID * SCALE) / 2, OY = 26;
+
+function drawPet(ctx, pet) {
+  ctx.clearRect(0, 0, CW, CH);
+  const frame = frameFor(pet);
+  const bob = bobFor();
+
+  // тень-«грунт»
+  ctx.fillStyle = "rgba(0,0,0,0.22)";
+  ctx.beginPath();
+  ctx.ellipse(CW / 2, OY + GRID * SCALE - 6, 40, 7, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // спрайт
+  for (let r = 0; r < frame.length && r < GRID; r++) {
+    const row = frame[r] || "";
+    for (let c = 0; c < GRID; c++) {
+      const col = pet.palette[row[c]];
+      if (!col) continue;
+      ctx.fillStyle = col;
+      ctx.fillRect(OX + c * SCALE, OY + r * SCALE + bob, SCALE, SCALE);
+    }
+  }
+
+  // оверлеи действий — общие для всех петов
+  if (action === "thinking") {
+    const n = (Math.floor(tick / 6) % 3) + 1;
+    ctx.fillStyle = "#cfe5ff";
+    ctx.font = "16px monospace";
+    ctx.fillText("•".repeat(n), CW / 2 + 30, OY + 14);
+  }
+  if (action === "working") {
+    ctx.fillStyle = "#ffe07a";
+    ctx.font = "14px monospace";
+    const a = (Math.floor(tick / 4) % 2 === 0);
+    ctx.fillText("✦", a ? OX - 2 : OX + GRID * SCALE - 10, OY + 28);
+    ctx.fillText("✦", a ? OX + GRID * SCALE - 8 : OX + 2, OY + 70);
+  }
+}
+
+// ---------- сборка DOM ----------
+const grid = document.getElementById("grid");
+const canvases = [];
+for (const pet of PETS) {
+  const card = document.createElement("div");
+  card.className = "card";
+  const cv = document.createElement("canvas");
+  cv.width = CW; cv.height = CH;
+  const name = document.createElement("div");
+  name.className = "name"; name.textContent = pet.name;
+  card.appendChild(cv); card.appendChild(name);
+  grid.appendChild(card);
+  canvases.push({ ctx: cv.getContext("2d"), pet });
+}
+
+const actionsBar = document.getElementById("actions");
+const buttons = {};
+for (const a of ACTIONS) {
+  const b = document.createElement("button");
+  b.textContent = a.label;
+  b.onclick = () => setAction(a.id);
+  actionsBar.appendChild(b);
+  buttons[a.id] = b;
+}
+function setAction(id) {
+  action = id;
+  for (const k in buttons) buttons[k].classList.toggle("active", k === id);
+}
+setAction("idle");
+
+// ---------- цикл анимации (~11 fps, как у нативного пета) ----------
+setInterval(() => {
+  tick++;
+  for (const { ctx, pet } of canvases) drawPet(ctx, pet);
+}, 90);
+</script>
+</body>
+</html>
