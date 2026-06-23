@@ -325,9 +325,9 @@ final class RootView: NSView {
 
     // MARK: анимация
 
-    // Время скрытия зависит от длины ответа: 5–18 сек (длиннее — дольше держим).
+    // Время скрытия зависит от длины ответа: 2.5–9 сек (длиннее — дольше держим).
     private func scheduleDismiss() {
-        let seconds = min(18.0, max(5.0, Double(bubbleText.count) * 0.04))
+        let seconds = min(9.0, max(2.5, Double(bubbleText.count) * 0.02))
         dismissAtTick = tick + Int(seconds / 0.09)
     }
 
