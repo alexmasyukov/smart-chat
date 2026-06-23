@@ -66,7 +66,8 @@ export class McpHub {
       });
     }
 
-    console.log(`  ✓ MCP "${serverName}": ${tools.length} инструм.`);
+    // Лог в stderr: stdout зарезервирован под NDJSON-протокол sidecar-движка.
+    console.error(`  ✓ MCP "${serverName}": ${tools.length} инструм.`);
   }
 
   hasTools() {

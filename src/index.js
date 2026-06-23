@@ -1,179 +1,130 @@
 #!/usr/bin/env node
-// Загружаем .env (если есть) до импорта модулей, читающих ключ.
+// CLI-чат: интерактивный клиент локального API-сервера (src/server.js).
+// Здесь ты вводишь запросы и выбираешь модель. Облако-пет зеркалит ответ
+// через широковещательный канал сервера.
+
 try {
   process.loadEnvFile?.(".env");
 } catch {
-  // .env не обязателен — ключ может быть в окружении
+  // .env не обязателен
 }
 
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { select, input } from "@inquirer/prompts";
-import { listTextModels } from "./models.js";
-import { McpHub } from "./mcp.js";
-import { openai } from "./openai.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const CONFIG_PATH = join(__dirname, "..", "mcp.config.json");
+const PORT = Number(process.env.PORT) || 8787;
+const BASE = `http://127.0.0.1:${PORT}`;
 
-const SYSTEM_PROMPT = `Ты — диспетчер вызова инструментов MCP-приложения «ALERT-APP».
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-Твоя задача — понять по смыслу, что хочет пользователь, и вызвать подходящий инструмент.
-Ты НЕ ведёшь беседу и НЕ пересказываешь содержимое — ты определяешь намерение и вызываешь инструмент.
+async function isUp() {
+  try {
+    const r = await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout(800) });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
 
-Понимай запрос по-человечески, а не по точным словам. Пользователь может формулировать
-свободно ("а покажи все проекты, какие есть", "что там по компонентам?", "глянь раг"),
-с синонимами, опечатками, в любом падеже и порядке слов. Триггерься на СМЫСЛ.
+// Поднимает сервер в фоне (detached), если он ещё не запущен. Не убивает при выходе —
+// чтобы пет-облако продолжало работать после закрытия CLI.
+async function ensureServer() {
+  if (await isUp()) return;
+  console.log("Поднимаю API-сервер…");
+  const child = spawn(process.execPath, [join(__dirname, "server.js")], {
+    cwd: join(__dirname, ".."),
+    env: process.env,
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+  for (let i = 0; i < 60; i++) {
+    if (await isUp()) return;
+    await sleep(300);
+  }
+  throw new Error("Сервер не поднялся за отведённое время.");
+}
 
-Доступные инструменты и когда их звать:
-- show_projects — когда речь про проекты (проект, проекты, проектики, "что за проекты", список проектов и т.п.).
-- show_components — когда речь про компоненты (компонент, компоненты, детали, составные части, "из чего состоит" и т.п.).
-- show_rag — когда упомянут rag / RAG или любая русская словоформа с корнем "раг"/"рэг"/"рак"
-  в ЛЮБОМ падеже (раг, рага, рагу, рагом, раге, рэг, рак, рака — всё это про RAG),
-  а также формулировки про базу знаний / поиск по документам.
-
-Правила:
-- Если намерение ясно — сразу вызывай нужный инструмент, без лишних слов.
-- Если в запросе несколько тем (например, и проекты, и компоненты) — вызови все подходящие инструменты.
-- Если запрос вообще не относится ни к одному инструменту — коротко уточни, что нужно.
-- Не выдумывай данные: показывай только то, что вернул инструмент.`;
+async function getModels() {
+  const r = await fetch(`${BASE}/api/models`);
+  return r.json(); // { list, current }
+}
 
 async function pickModel(current) {
-  console.log("Запрашиваю список моделей через API…");
-  const models = await listTextModels();
-  if (models.length === 0) {
-    throw new Error("API не вернул ни одной текстовой модели.");
-  }
+  const { list, current: serverCurrent } = await getModels();
+  if (!list || list.length === 0) throw new Error("API не вернул моделей.");
   return select({
     message: "Выберите модель:",
-    choices: models.map((id) => ({ name: id, value: id })),
-    default: current && models.includes(current) ? current : models[0],
+    choices: list.map((id) => ({ name: id, value: id })),
+    default: current || serverCurrent || list[0],
   });
 }
 
-// Reasoning по умолчанию отключён: минимальные «раздумья» для моделей,
-// которые это поддерживают (gpt-5*, o-серия). Для обычных моделей — ничего.
-function reasoningParams(model) {
-  const m = model.toLowerCase();
-  if (m.startsWith("gpt-5")) return { reasoning_effort: "minimal" };
-  if (/^o[134]/.test(m)) return { reasoning_effort: "low" };
-  return {};
-}
-
-// Читает стрим OpenAI: печатает текст по токенам и накапливает tool_calls.
-// Возвращает { content, toolCalls } для восстановления сообщения ассистента.
-async function streamResponse(model, hub, messages) {
-  const stream = await openai.chat.completions.create({
-    model,
-    messages,
-    tools: hub.hasTools() ? hub.openaiTools : undefined,
-    stream: true,
-    ...reasoningParams(model),
+// POST /api/chat и разбор SSE-потока с колбэками.
+async function streamChat(text, model, { onState, onToken, onTool }) {
+  const resp = await fetch(`${BASE}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify({ text, model }),
   });
+  if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
 
-  let content = "";
-  const toolCalls = []; // индексируется по delta.tool_calls[].index
-  let printedLabel = false;
-
-  for await (const chunk of stream) {
-    const delta = chunk.choices[0]?.delta;
-    if (!delta) continue;
-
-    if (delta.content) {
-      if (!printedLabel) {
-        process.stdout.write("\x1b[32mБот:\x1b[0m ");
-        printedLabel = true;
+  const decoder = new TextDecoder();
+  let buf = "";
+  for await (const chunk of resp.body) {
+    buf += decoder.decode(chunk, { stream: true });
+    let sep;
+    while ((sep = buf.indexOf("\n\n")) !== -1) {
+      const block = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+      let event = "message";
+      let data = "";
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) data += line.slice(5).trim();
       }
-      process.stdout.write(delta.content); // токен за токеном, как в ChatGPT
-      content += delta.content;
-    }
-
-    for (const tcDelta of delta.tool_calls || []) {
-      const i = tcDelta.index;
-      if (!toolCalls[i]) {
-        toolCalls[i] = { id: "", type: "function", function: { name: "", arguments: "" } };
+      if (event === "message" || !data) continue;
+      let payload = {};
+      try {
+        payload = JSON.parse(data);
+      } catch {
+        // мусор пропускаем
       }
-      const slot = toolCalls[i];
-      if (tcDelta.id) slot.id = tcDelta.id;
-      if (tcDelta.function?.name) slot.function.name += tcDelta.function.name;
-      if (tcDelta.function?.arguments) slot.function.arguments += tcDelta.function.arguments;
+      if (event === "state") onState?.(payload.value);
+      else if (event === "token") onToken?.(payload.text);
+      else if (event === "tool") onTool?.(payload);
+      else if (event === "error") throw new Error(payload.message || "ошибка сервера");
+      else if (event === "done") return;
     }
-  }
-
-  if (printedLabel) process.stdout.write("\n");
-  return { content, toolCalls: toolCalls.filter(Boolean) };
-}
-
-// Один ход диалога: гоняем модель в цикле, пока она вызывает инструменты.
-async function runTurn(model, hub, messages) {
-  while (true) {
-    const { content, toolCalls } = await streamResponse(model, hub, messages);
-
-    messages.push({
-      role: "assistant",
-      content: content || null,
-      ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
-    });
-
-    if (toolCalls.length) {
-      for (const tc of toolCalls) {
-        let args = {};
-        try {
-          args = JSON.parse(tc.function.arguments || "{}");
-        } catch {
-          // оставляем пустые аргументы при кривом JSON
-        }
-        console.log(`\x1b[90m  ⚙ вызываю ${tc.function.name}(${tc.function.arguments || ""})\x1b[0m`);
-        const result = await hub.callTool(tc.function.name, args);
-        messages.push({
-          role: "tool",
-          tool_call_id: tc.id,
-          content: result,
-        });
-      }
-      continue; // снова к модели с результатами инструментов
-    }
-
-    return; // текст уже напечатан в стриме
   }
 }
 
 async function main() {
   console.log("\x1b[1m=== smart-chat ===\x1b[0m");
+  await ensureServer();
 
-  const hub = new McpHub();
-  console.log("Подключаю MCP-серверы…");
-  await hub.loadFromConfig(CONFIG_PATH);
-  if (!hub.hasTools()) {
-    console.log("  (инструментов нет — чат работает в обычном режиме)");
-  }
-
+  const { list } = await getModels();
+  console.log(`Моделей доступно: ${list.length}. Сервер: ${BASE}`);
   let model = await pickModel();
   console.log(`\nМодель: \x1b[36m${model}\x1b[0m`);
   console.log("Команды: /model — сменить модель, /clear — очистить историю, /exit — выход.\n");
-
-  const messages = [{ role: "system", content: SYSTEM_PROMPT }];
-
-  const cleanup = async () => {
-    await hub.close();
-    process.exit(0);
-  };
-  process.on("SIGINT", cleanup);
 
   while (true) {
     let userText;
     try {
       userText = await input({ message: "Вы:" });
     } catch {
-      break; // Ctrl+C в промпте
+      break; // Ctrl+C
     }
 
     const trimmed = userText.trim();
     if (!trimmed) continue;
-
     if (trimmed === "/exit") break;
     if (trimmed === "/clear") {
-      messages.length = 1; // оставляем system
+      await fetch(`${BASE}/api/reset`, { method: "POST" });
       console.log("История очищена.\n");
       continue;
     }
@@ -183,20 +134,31 @@ async function main() {
       continue;
     }
 
-    messages.push({ role: "user", content: trimmed });
-
+    let wroteToken = false;
     try {
-      await runTurn(model, hub, messages);
-      console.log(); // пустая строка после ответа
+      await streamChat(trimmed, model, {
+        onState: (s) => {
+          if (s === "talking" && !wroteToken) process.stdout.write("\x1b[32mБот:\x1b[0m ");
+        },
+        onToken: (t) => {
+          wroteToken = true;
+          process.stdout.write(t); // токен за токеном
+        },
+        onTool: (info) => {
+          if (info.phase === "start") {
+            process.stdout.write(
+              `${wroteToken ? "\n" : ""}\x1b[90m  ⚙ вызываю ${info.name}(${info.args})\x1b[0m\n`
+            );
+          }
+        },
+      });
+      console.log("\n");
     } catch (err) {
-      console.error(`\x1b[31mОшибка:\x1b[0m ${err.message}\n`);
-      // откатываем неудачное сообщение, чтобы не ломать историю
-      messages.pop();
+      console.error(`\n\x1b[31mОшибка:\x1b[0m ${err.message}\n`);
     }
   }
 
-  await hub.close();
-  console.log("Пока!");
+  console.log("Пока! (сервер и облако продолжают работать; остановить — pnpm stop)");
 }
 
 main().catch((err) => {

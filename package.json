@@ -3,12 +3,16 @@
   "version": "1.0.0",
   "type": "module",
   "packageManager": "pnpm@10.29.2",
-  "description": "CLI-чат с моделями OpenAI и поддержкой MCP-инструментов",
+  "description": "Чат с моделями OpenAI и MCP: CLI, HTTP-API и нативный десктоп-пет",
   "bin": {
     "smart-chat": "src/index.js"
   },
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "serve": "node src/server.js",
+    "stop": "pkill -f 'src/server.js' || true",
+    "pet:build": "swiftc -swift-version 5 -O mascot/main.swift -o mascot/pet -framework AppKit",
+    "pet": "bash mascot/run.sh"
   },
   "dependencies": {
     "@inquirer/prompts": "^7.2.1",
