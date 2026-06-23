@@ -159,12 +159,14 @@ final class ApiClient: NSObject, URLSessionDataDelegate {
 
 // MARK: - Корневое представление (рисует пета + облачко, держит контролы)
 
-final class RootView: NSView {
+final class RootView: NSView, NSWindowDelegate {
     let api: ApiClient
 
     private var state: MascotState = .idle
     private var tick: Int = 0
     private var bubbleText: String = ""   // пусто, пока модель не ответит
+    private var settingsOpen = false      // пока настройки открыты — облако показано
+    private let previewText = "Пример сообщения — настрой размер пета и шрифт."
     private var toolBadge: String?
     private var toolBadgeUntil: Int = 0
     private var dismissAtTick: Int = 0   // когда скрыть облако (0 = не скрывать)
@@ -239,10 +241,26 @@ final class RootView: NSView {
 
     @objc private func openSettings() {
         if settingsWindow == nil { settingsWindow = makeSettingsWindow() }
+        settingsOpen = true            // пока настройки открыты — облако видно
+        dismissAtTick = 0              // не скрывать облако в это время
+        relayout()
         settingsWindow?.center()
         settingsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
+
+    // Закрытие окна настроек — облако снова прячется (если нет ответа).
+    func windowWillClose(_ notification: Notification) {
+        settingsOpen = false
+        relayout()
+    }
+
+    // Диапазоны параметров (слайдеры работают по шкале 0–100 с шагом 5).
+    private let RANGE_SIZE = (70.0, 200.0)
+    private let RANGE_FONT = (10.0, 24.0)
+    private let RANGE_OPACITY = (0.3, 1.0)
+    private func norm(_ v: Double, _ r: (Double, Double)) -> Double { (v - r.0) / (r.1 - r.0) * 100 }
+    private func denorm(_ v: Double, _ r: (Double, Double)) -> Double { r.0 + v / 100 * (r.1 - r.0) }
 
     private func makeSettingsWindow() -> NSWindow {
         let win = NSWindow(
@@ -250,6 +268,7 @@ final class RootView: NSView {
             styleMask: [.titled, .closable], backing: .buffered, defer: false)
         win.title = "Настройки пета"
         win.isReleasedWhenClosed = false
+        win.delegate = self
 
         let stack = NSStackView()
         stack.orientation = .vertical
@@ -258,12 +277,12 @@ final class RootView: NSView {
         stack.edgeInsets = NSEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        stack.addArrangedSubview(sliderRow("Размер пета", min: 70, max: 200,
-                                           value: Double(charBox), action: #selector(petSizeChanged)))
-        stack.addArrangedSubview(sliderRow("Размер шрифта сообщений", min: 10, max: 24,
-                                           value: Double(fontSize), action: #selector(fontChanged)))
-        stack.addArrangedSubview(sliderRow("Прозрачность пета", min: 0.3, max: 1.0,
-                                           value: Double(window?.alphaValue ?? 1.0), action: #selector(opacityChanged)))
+        stack.addArrangedSubview(sliderRow("Размер пета",
+                                           value: norm(Double(charBox), RANGE_SIZE), action: #selector(petSizeChanged)))
+        stack.addArrangedSubview(sliderRow("Размер шрифта сообщений",
+                                           value: norm(Double(fontSize), RANGE_FONT), action: #selector(fontChanged)))
+        stack.addArrangedSubview(sliderRow("Прозрачность пета",
+                                           value: norm(Double(window?.alphaValue ?? 1.0), RANGE_OPACITY), action: #selector(opacityChanged)))
 
         let content = win.contentView!
         content.addSubview(stack)
@@ -275,13 +294,16 @@ final class RootView: NSView {
         return win
     }
 
-    // Строка настройки: подпись + стандартный NSSlider.
-    private func sliderRow(_ title: String, min: Double, max: Double, value: Double, action: Selector) -> NSView {
+    // Строка настройки: подпись + NSSlider по шкале 0–100 с засечками (шаг 5).
+    private func sliderRow(_ title: String, value: Double, action: Selector) -> NSView {
         let label = NSTextField(labelWithString: title)
         label.font = NSFont.systemFont(ofSize: 12)
 
-        let slider = NSSlider(value: value, minValue: min, maxValue: max, target: self, action: action)
+        let slider = NSSlider(value: value, minValue: 0, maxValue: 100, target: self, action: action)
         slider.isContinuous = true
+        slider.numberOfTickMarks = 21               // 0,5,10,…,100
+        slider.allowsTickMarkValuesOnly = true       // привязка строго к рискам
+        slider.tickMarkPosition = .below
         slider.translatesAutoresizingMaskIntoConstraints = false
         slider.widthAnchor.constraint(equalToConstant: 284).isActive = true
 
@@ -293,17 +315,17 @@ final class RootView: NSView {
     }
 
     @objc private func petSizeChanged(_ sender: NSSlider) {
-        charBox = CGFloat(sender.doubleValue)
+        charBox = CGFloat(denorm(sender.doubleValue, RANGE_SIZE))
         relayout()
     }
 
     @objc private func fontChanged(_ sender: NSSlider) {
-        fontSize = CGFloat(sender.doubleValue)
+        fontSize = CGFloat(denorm(sender.doubleValue, RANGE_FONT))
         relayout()
     }
 
     @objc private func opacityChanged(_ sender: NSSlider) {
-        window?.alphaValue = CGFloat(sender.doubleValue)
+        window?.alphaValue = CGFloat(denorm(sender.doubleValue, RANGE_OPACITY))
     }
 
     // MARK: события сервера (только чтение — облако зеркалит ответ)
@@ -354,8 +376,10 @@ final class RootView: NSView {
     // MARK: динамическая раскладка — размер окна/облака по объёму ответа
 
     // Текст в облаке: ответ модели, либо «…» во время ответа, иначе ничего.
+    // Пока открыты настройки — показываем облако (ответ или превью-текст).
     private func displayText() -> String? {
         if !bubbleText.isEmpty { return bubbleText }
+        if settingsOpen { return previewText }
         if state == .thinking || state == .working { return "…" }
         return nil
     }
@@ -419,7 +443,7 @@ final class RootView: NSView {
     private func tickAnimation() {
         tick += 1
         if let _ = toolBadge, tick > toolBadgeUntil { toolBadge = nil }
-        if dismissAtTick != 0 && tick >= dismissAtTick {
+        if dismissAtTick != 0 && tick >= dismissAtTick && !settingsOpen {
             dismissAtTick = 0
             bubbleText = ""
             relayout()            // облако исчезает, остаётся только персонаж
