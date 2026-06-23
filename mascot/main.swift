@@ -171,9 +171,11 @@ final class RootView: NSView {
     private var placed = false   // окно уже спозиционировано хотя бы раз
 
     private let closeButton = NSButton()
+    private var settingsWindow: NSWindow?
 
-    // Геометрия. Персонаж на ~30% меньше прежнего (было 160 → 112).
-    private let charBox: CGFloat = 112
+    // Геометрия. Размер персонажа и шрифт настраиваются в «Настройках».
+    private var charBox: CGFloat = 112
+    private var fontSize: CGFloat = 13
     private let sideMargin: CGFloat = 14
     private let topMargin: CGFloat = 10
     private let bottomMargin: CGFloat = 12
@@ -181,15 +183,15 @@ final class RootView: NSView {
     private let maxBubbleW: CGFloat = 240
     private let bubblePad: CGFloat = 11
 
-    private let textAttrs: [NSAttributedString.Key: Any] = {
+    private var textAttrs: [NSAttributedString.Key: Any] {
         let para = NSMutableParagraphStyle()
         para.lineBreakMode = .byWordWrapping
         return [
-            .font: NSFont.systemFont(ofSize: 13),
+            .font: NSFont.systemFont(ofSize: fontSize),
             .foregroundColor: NSColor.white,
             .paragraphStyle: para,
         ]
-    }()
+    }
 
     override var isFlipped: Bool { true }
 
@@ -219,6 +221,89 @@ final class RootView: NSView {
 
     @objc private func closeApp() {
         NSApp.terminate(nil)
+    }
+
+    // MARK: контекстное меню (правый клик по пету)
+
+    override func rightMouseDown(with event: NSEvent) {
+        let menu = NSMenu()
+        let settings = NSMenuItem(title: "Настройки", action: #selector(openSettings), keyEquivalent: "")
+        let quit = NSMenuItem(title: "Выход", action: #selector(closeApp), keyEquivalent: "")
+        settings.target = self
+        quit.target = self
+        menu.addItem(settings)
+        menu.addItem(.separator())
+        menu.addItem(quit)
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func openSettings() {
+        if settingsWindow == nil { settingsWindow = makeSettingsWindow() }
+        settingsWindow?.center()
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func makeSettingsWindow() -> NSWindow {
+        let win = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 210),
+            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        win.title = "Настройки пета"
+        win.isReleasedWhenClosed = false
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 16
+        stack.edgeInsets = NSEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        stack.addArrangedSubview(sliderRow("Размер пета", min: 70, max: 200,
+                                           value: Double(charBox), action: #selector(petSizeChanged)))
+        stack.addArrangedSubview(sliderRow("Размер шрифта сообщений", min: 10, max: 24,
+                                           value: Double(fontSize), action: #selector(fontChanged)))
+        stack.addArrangedSubview(sliderRow("Прозрачность пета", min: 0.3, max: 1.0,
+                                           value: Double(window?.alphaValue ?? 1.0), action: #selector(opacityChanged)))
+
+        let content = win.contentView!
+        content.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: content.topAnchor),
+        ])
+        return win
+    }
+
+    // Строка настройки: подпись + стандартный NSSlider.
+    private func sliderRow(_ title: String, min: Double, max: Double, value: Double, action: Selector) -> NSView {
+        let label = NSTextField(labelWithString: title)
+        label.font = NSFont.systemFont(ofSize: 12)
+
+        let slider = NSSlider(value: value, minValue: min, maxValue: max, target: self, action: action)
+        slider.isContinuous = true
+        slider.translatesAutoresizingMaskIntoConstraints = false
+        slider.widthAnchor.constraint(equalToConstant: 284).isActive = true
+
+        let row = NSStackView(views: [label, slider])
+        row.orientation = .vertical
+        row.alignment = .leading
+        row.spacing = 5
+        return row
+    }
+
+    @objc private func petSizeChanged(_ sender: NSSlider) {
+        charBox = CGFloat(sender.doubleValue)
+        relayout()
+    }
+
+    @objc private func fontChanged(_ sender: NSSlider) {
+        fontSize = CGFloat(sender.doubleValue)
+        relayout()
+    }
+
+    @objc private func opacityChanged(_ sender: NSSlider) {
+        window?.alphaValue = CGFloat(sender.doubleValue)
     }
 
     // MARK: события сервера (только чтение — облако зеркалит ответ)
