@@ -22,8 +22,8 @@ const PORT = Number(process.env.PORT) || 8787;
 const HOST = process.env.HOST || "127.0.0.1";
 
 const hub = new McpHub();
-const messages = [{ role: "system", content: SYSTEM_PROMPT }];
 let busy = false;
+// Без истории чата: каждый запрос отправляется отдельно (system + текущий user).
 
 // Доступность локального провайдера (LM Studio) — быстрый probe.
 async function localAvailable() {
@@ -121,7 +121,14 @@ async function handleChat(req, res) {
   }
 
   busy = true;
-  messages.push({ role: "user", content: text });
+
+  // Stateless: новый массив на каждый запрос — только system + текущий user.
+  // (внутри хода runChatTurn временно добавляет ответы/результаты инструментов,
+  //  но между сообщениями ничего не сохраняется)
+  const messages = [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: text },
+  ];
 
   let closed = false;
   req.on("close", () => (closed = true));
@@ -149,9 +156,6 @@ async function handleChat(req, res) {
     fan("done", {});
   } catch (err) {
     fan("error", { message: err.message });
-    // откатываем неудачный ход
-    while (messages.length > 1 && messages[messages.length - 1].role !== "user") messages.pop();
-    if (messages.length > 1) messages.pop();
   } finally {
     busy = false;
     res.end();
@@ -187,10 +191,6 @@ const server = http.createServer(async (req, res) => {
 
   if (method === "GET" && path === "/api/tools")
     return json(res, 200, { list: hub.openaiTools.map((t) => t.function.name) });
-  if (method === "POST" && path === "/api/reset") {
-    messages.length = 1;
-    return json(res, 200, { ok: true });
-  }
   if (method === "POST" && path === "/api/chat") return handleChat(req, res);
 
   // Поток событий для облака-зеркала (только чтение).

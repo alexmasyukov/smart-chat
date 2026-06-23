@@ -146,7 +146,7 @@ async function main() {
   let model = await pickModel(provider);
   console.log(`\nПровайдер: \x1b[35m${provider}\x1b[0m  Модель: \x1b[36m${model}\x1b[0m`);
   console.log(
-    "Команды: /provider — сменить провайдера, /model — сменить модель, /clear — очистить, /exit — выход.\n"
+    "Команды: /provider — сменить провайдера, /model — сменить модель, /exit — выход.\n"
   );
 
   while (true) {
@@ -160,11 +160,6 @@ async function main() {
     const trimmed = userText.trim();
     if (!trimmed) continue;
     if (trimmed === "/exit") break;
-    if (trimmed === "/clear") {
-      await fetch(`${BASE}/api/reset`, { method: "POST" });
-      console.log("История очищена.\n");
-      continue;
-    }
     if (trimmed === "/provider") {
       provider = await pickProvider(provider);
       model = await pickModel(provider);
