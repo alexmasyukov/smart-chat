@@ -18,6 +18,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8787;
 const BASE = `http://127.0.0.1:${PORT}`;
 
+// Дефолты: по умолчанию локальный провайдер и модель LM Studio.
+const DEFAULT_PROVIDER = "local";
+const DEFAULT_MODEL = { local: "liquid/lfm2.5-1.2b", cloud: "gpt-5-mini" };
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function isUp() {
@@ -67,6 +71,7 @@ async function pickProvider(current) {
     throw new Error("Нет доступных провайдеров (проверь OPENAI_TOKEN и LM Studio).");
   }
   if (available.length === 1) return available[0].id;
+  const hasDefault = available.some((p) => p.id === DEFAULT_PROVIDER);
   return select({
     message: "Провайдер:",
     choices: providers.map((p) => ({
@@ -74,17 +79,22 @@ async function pickProvider(current) {
       value: p.id,
       disabled: !p.available,
     })),
-    default: current || available[0].id,
+    default: current || (hasDefault ? DEFAULT_PROVIDER : available[0].id),
   });
 }
 
 async function pickModel(provider, current) {
   const { list } = await getModels(provider);
   if (!list || list.length === 0) throw new Error(`У провайдера ${provider} нет моделей.`);
+  const preferred = DEFAULT_MODEL[provider];
+  const def =
+    (current && list.includes(current) && current) ||
+    (preferred && list.includes(preferred) && preferred) ||
+    list[0];
   return select({
     message: "Модель:",
     choices: list.map((id) => ({ name: id, value: id })),
-    default: current && list.includes(current) ? current : list[0],
+    default: def,
   });
 }
 
