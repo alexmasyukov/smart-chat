@@ -164,11 +164,31 @@ final class RootView: NSView {
 
     private var state: MascotState = .idle
     private var tick: Int = 0
-    private var bubbleText: String = "Жду чат… Спроси что-нибудь в CLI."
+    private var bubbleText: String = ""   // пусто, пока модель не ответит
     private var toolBadge: String?
     private var toolBadgeUntil: Int = 0
+    private var placed = false   // окно уже спозиционировано хотя бы раз
 
     private let closeButton = NSButton()
+
+    // Геометрия. Персонаж на ~30% меньше прежнего (было 160 → 112).
+    private let charBox: CGFloat = 112
+    private let sideMargin: CGFloat = 14
+    private let topMargin: CGFloat = 10
+    private let bottomMargin: CGFloat = 12
+    private let tailH: CGFloat = 12
+    private let maxBubbleW: CGFloat = 240
+    private let bubblePad: CGFloat = 11
+
+    private let textAttrs: [NSAttributedString.Key: Any] = {
+        let para = NSMutableParagraphStyle()
+        para.lineBreakMode = .byWordWrapping
+        return [
+            .font: NSFont.systemFont(ofSize: 13),
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: para,
+        ]
+    }()
 
     override var isFlipped: Bool { true }
 
@@ -205,8 +225,7 @@ final class RootView: NSView {
     func handle(_ e: [String: Any]) {
         switch e["event"] as? String {
         case "hello":
-            bubbleText = "На связи. Пиши в CLI — я покажу ответ здесь."
-            state = .idle
+            state = .idle         // ничего не показываем — ждём ответа модели
         case "prompt":
             bubbleText = ""       // новый ход — чистим пузырь
             state = .thinking
@@ -237,6 +256,65 @@ final class RootView: NSView {
         default:
             break
         }
+        relayout()
+    }
+
+    func initialLayout() { relayout() }
+
+    // MARK: динамическая раскладка — размер окна/облака по объёму ответа
+
+    // Текст в облаке: ответ модели, либо «…» во время ответа, иначе ничего.
+    private func displayText() -> String? {
+        if !bubbleText.isEmpty { return bubbleText }
+        if state == .thinking || state == .working { return "…" }
+        return nil
+    }
+
+    private func bubbleSize(for text: String) -> CGSize {
+        let maxTextW = maxBubbleW - 2 * bubblePad
+        let str = NSAttributedString(string: text, attributes: textAttrs)
+        let bound = str.boundingRect(
+            with: CGSize(width: maxTextW, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin])
+        let w = min(maxBubbleW, ceil(bound.width) + 2 * bubblePad)
+        let h = ceil(bound.height) + 2 * bubblePad
+        return CGSize(width: max(w, 54), height: max(h, 34))
+    }
+
+    // Пересчитывает размер окна под текущий ответ и держит нижний край/центр на месте.
+    private func relayout() {
+        guard let window = window, let screen = window.screen ?? NSScreen.main else {
+            needsDisplay = true
+            return
+        }
+
+        let text = displayText()
+        let bs = text.map { bubbleSize(for: $0) }
+        let bubbleW = bs?.width ?? 0
+        let bubbleH = bs?.height ?? 0
+        let bubbleBlock = bs == nil ? 0 : (bubbleH + tailH)
+
+        let contentW = max(charBox, bubbleW) + 2 * sideMargin
+        let contentH = topMargin + bubbleBlock + charBox + bottomMargin
+
+        let vf = screen.visibleFrame
+        let old = window.frame
+        // первый раз — правый нижний угол; дальше держим центр по X и нижний край
+        // (чтобы при росте облако «раскрывалось» вверх и не убегало от места, куда перетащили)
+        let centerX = placed ? old.midX : (vf.maxX - 24 - contentW / 2)
+        let bottomY = placed ? old.minY : (vf.minY + 24)
+        placed = true
+
+        var x = centerX - contentW / 2
+        var y = bottomY
+        x = min(max(x, vf.minX + 8), vf.maxX - contentW - 8)
+        if y + contentH > vf.maxY { y = vf.maxY - contentH }
+        y = max(y, vf.minY + 8)
+
+        window.setFrame(NSRect(x: x, y: y, width: contentW, height: contentH), display: true)
+        frame = NSRect(origin: .zero, size: NSSize(width: contentW, height: contentH))
+        closeButton.frame = NSRect(x: contentW - 24, y: 5, width: 18, height: 18)
+        closeButton.isHidden = (bs == nil) // прячем крестик, когда облака нет
         needsDisplay = true
     }
 
@@ -268,17 +346,26 @@ final class RootView: NSView {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         let w = bounds.width
 
-        // области
-        let bubbleArea = CGRect(x: 16, y: 30, width: w - 32, height: 150)
-        let charArea = CGRect(x: 0, y: 188, width: w, height: 160)
+        // персонаж — снизу по центру
+        let charArea = CGRect(x: (w - charBox) / 2,
+                              y: bounds.height - bottomMargin - charBox,
+                              width: charBox, height: charBox)
 
-        drawBubble(in: bubbleArea, ctx: ctx)
+        // облако рисуем только когда есть что показать
+        if let text = displayText() {
+            let bs = bubbleSize(for: text)
+            let bubbleRect = CGRect(x: (w - bs.width) / 2, y: topMargin,
+                                    width: bs.width, height: bs.height)
+            drawBubble(in: bubbleRect, text: text, charTop: charArea.minY, ctx: ctx)
+        }
 
         // лёгкая тень-«грунт» под персонажем
         let bob = (state == .working)
-            ? CGFloat(abs((tick % 4) - 2))           // быстрый поскок при работе
+            ? CGFloat(abs((tick % 4) - 2))            // быстрый поскок при работе
             : CGFloat(sin(Double(tick) * 0.22) * 2.0) // спокойное дыхание
-        let shadow = CGRect(x: charArea.midX - 46, y: charArea.maxY - 14, width: 92, height: 14)
+        let shScale = charBox / 160
+        let shadow = CGRect(x: charArea.midX - 46 * shScale, y: charArea.maxY - 12,
+                            width: 92 * shScale, height: 12)
         NSColor(calibratedWhite: 0, alpha: 0.18).setFill()
         NSBezierPath(ovalIn: shadow).fill()
 
@@ -306,8 +393,8 @@ final class RootView: NSView {
         }
     }
 
-    private func drawBubble(in area: CGRect, ctx: CGContext) {
-        let body = NSBezierPath(roundedRect: area, xRadius: 14, yRadius: 14)
+    private func drawBubble(in area: CGRect, text: String, charTop: CGFloat, ctx: CGContext) {
+        let body = NSBezierPath(roundedRect: area, xRadius: 13, yRadius: 13)
         NSColor(calibratedWhite: 0.12, alpha: 0.93).setFill()
         body.fill()
         NSColor(srgbRed: 0.50, green: 0.80, blue: 1.0, alpha: 0.5).setStroke()
@@ -316,40 +403,17 @@ final class RootView: NSView {
 
         // хвостик вниз, к персонажу
         let tail = NSBezierPath()
-        tail.move(to: CGPoint(x: area.midX - 10, y: area.maxY - 1))
-        tail.line(to: CGPoint(x: area.midX + 10, y: area.maxY - 1))
-        tail.line(to: CGPoint(x: area.midX, y: area.maxY + 12))
+        tail.move(to: CGPoint(x: area.midX - 9, y: area.maxY - 1))
+        tail.line(to: CGPoint(x: area.midX + 9, y: area.maxY - 1))
+        tail.line(to: CGPoint(x: area.midX, y: min(area.maxY + 11, charTop - 2)))
         tail.close()
         NSColor(calibratedWhite: 0.12, alpha: 0.93).setFill()
         tail.fill()
 
-        // текст
-        let inset = area.insetBy(dx: 12, dy: 10)
-        let para = NSMutableParagraphStyle()
-        para.lineBreakMode = .byWordWrapping
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 13),
-            .foregroundColor: NSColor.white,
-            .paragraphStyle: para,
-        ]
-        var display = bubbleText
-        if display.isEmpty && state == .thinking {
-            let dots = String(repeating: "•", count: (tick / 4) % 3 + 1)
-            display = dots
-        }
-        let str = NSAttributedString(string: display, attributes: attrs)
-
-        ctx.saveGState()
-        NSBezierPath(rect: inset).addClip()
-        let bound = str.boundingRect(
-            with: CGSize(width: inset.width, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin])
-        var drawRect = inset
-        if bound.height > inset.height {
-            drawRect.origin.y -= (bound.height - inset.height) // показываем самые свежие строки
-        }
-        str.draw(with: drawRect, options: [.usesLineFragmentOrigin])
-        ctx.restoreGState()
+        // текст (облако ровно под объём — обрезки нет)
+        let inset = area.insetBy(dx: bubblePad, dy: bubblePad)
+        NSAttributedString(string: text, attributes: textAttrs)
+            .draw(with: inset, options: [.usesLineFragmentOrigin])
     }
 
     private func drawBadge(_ text: String, near rect: CGRect) {
@@ -376,7 +440,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var root: RootView!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let size = NSSize(width: 280, height: 360)
+        // Стартовый размер — только под персонажа; дальше окно растёт под ответ.
+        let size = NSSize(width: 140, height: 134)
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let origin = NSPoint(x: screen.maxX - size.width - 24, y: screen.minY + 24)
 
@@ -400,6 +465,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // показываем поверх, но НЕ забираем фокус у терминала (ты печатаешь в CLI)
         window.orderFrontRegardless()
+        root.initialLayout()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
