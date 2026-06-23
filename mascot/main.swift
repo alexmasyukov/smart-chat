@@ -325,9 +325,10 @@ final class RootView: NSView {
 
     // MARK: анимация
 
-    // Скрываем облако через 4 секунды после ответа.
+    // Время скрытия зависит от длины ответа: 5–18 сек (длиннее — дольше держим).
     private func scheduleDismiss() {
-        dismissAtTick = tick + Int(4.0 / 0.09)
+        let seconds = min(18.0, max(5.0, Double(bubbleText.count) * 0.04))
+        dismissAtTick = tick + Int(seconds / 0.09)
     }
 
     private func tickAnimation() {
