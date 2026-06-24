@@ -95,3 +95,151 @@ export async function runChatTurn({ client, provider, model, hub, messages, onSt
     return content;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Двухпроходная маршрутизация для слабых (локальных) моделей.
+// Проход 1: классификация запроса в один ярлык (без инструментов — модели проще).
+// Проход 2: по ярлыку детерминированно вызываем нужный инструмент кодом и
+//           просим модель кратко озвучить результат по-русски.
+// ---------------------------------------------------------------------------
+
+const SECTIONS = [
+  { label: "components", tool: "show_components", match: ["components", "компонент"] },
+  { label: "projects", tool: "show_projects", match: ["projects", "проект"] },
+  { label: "rag", tool: "show_rag", match: ["rag", "раг", "рак"] },
+  { label: "adsw", tool: "open_adsw", match: ["adsw", "адсв"] },
+];
+
+const CLASSIFY_PROMPT = `Ты — классификатор. По сообщению пользователя выбери ОДИН раздел:
+- components — речь о компонентах;
+- projects — речь о проектах;
+- rag — речь о RAG-системе (раг, рак, база знаний);
+- adsw — открыть папку ADSW (адсв);
+- none — обычный разговор/приветствие или ничего из перечисленного.
+Слова «открой», «запусти», «покажи» означают запуск и не меняют выбор раздела.
+Верни только поле section.`;
+
+const ROUTE_SCHEMA = {
+  type: "json_schema",
+  json_schema: {
+    name: "route",
+    strict: true,
+    schema: {
+      type: "object",
+      properties: { section: { type: "string", enum: ["components", "projects", "rag", "adsw", "none"] } },
+      required: ["section"],
+      additionalProperties: false,
+    },
+  },
+};
+
+// Находит реальное имя функции инструмента в хабе (с учётом возможного префикса).
+function resolveToolName(hub, bare) {
+  const t = hub.openaiTools.find(
+    (x) => x.function.name === bare || x.function.name.endsWith(`__${bare}`)
+  );
+  return t?.function.name || bare;
+}
+
+// Быстрый детерминированный проход: явное слово раздела в начале слова.
+// (граница слова, чтобы «рак» не ловился внутри «практика» и т.п.)
+function keywordSection(text) {
+  const t = text.toLowerCase();
+  for (const s of SECTIONS) {
+    for (const term of s.match) {
+      if (new RegExp(`(^|[^a-zа-яё])${term}`, "i").test(t)) return s.label;
+    }
+  }
+  return null;
+}
+
+// Классификация: сначала по ключевым словам, затем модель (structured output), затем фолбэк.
+async function classify(client, model, text) {
+  const kw = keywordSection(text);
+  if (kw) return kw;
+
+  try {
+    const cls = await client.chat.completions.create({
+      model,
+      temperature: 0,
+      messages: [
+        { role: "system", content: CLASSIFY_PROMPT },
+        { role: "user", content: text },
+      ],
+      response_format: ROUTE_SCHEMA,
+    });
+    const parsed = JSON.parse(cls.choices[0]?.message?.content || "{}");
+    if (SECTIONS.some((s) => s.label === parsed.section) || parsed.section === "none") {
+      return parsed.section;
+    }
+  } catch {
+    // структурированный вывод не поддержан/сломался — фолбэк ниже
+  }
+  // Фолбэк: свободный ответ + сопоставление по подстроке.
+  const cls = await client.chat.completions.create({
+    model,
+    temperature: 0,
+    messages: [
+      { role: "system", content: CLASSIFY_PROMPT },
+      { role: "user", content: text },
+    ],
+  });
+  const raw = (cls.choices[0]?.message?.content || "").toLowerCase();
+  return SECTIONS.find((s) => s.match.some((m) => raw.includes(m)))?.label || "none";
+}
+
+export async function runRoutedTurn({ client, model, hub, text, onState, onToken, onTool }) {
+  onState?.("thinking");
+
+  // --- Проход 1: классификация (строго один раздел) ---
+  const section = await classify(client, model, text);
+  const hit = SECTIONS.find((s) => s.label === section);
+
+  // Ничего не подошло — обычный текстовый ответ.
+  if (!hit) {
+    onState?.("talking");
+    const stream = await client.chat.completions.create({
+      model,
+      temperature: 0,
+      stream: true,
+      messages: [
+        { role: "system", content: "Ты ассистент. Отвечай кратко и по-русски." },
+        { role: "user", content: text },
+      ],
+    });
+    for await (const chunk of stream) {
+      const t = chunk.choices[0]?.delta?.content;
+      if (t) onToken?.(t);
+    }
+    onState?.("idle");
+    return;
+  }
+
+  // --- Проход 2: детерминированный вызов инструмента + озвучка результата ---
+  onState?.("working");
+  const fnName = resolveToolName(hub, hit.tool);
+  onTool?.({ name: fnName, args: "{}", phase: "start" });
+  const result = await hub.callTool(fnName, {});
+  onTool?.({ name: fnName, phase: "done", result });
+
+  onState?.("talking");
+  const stream = await client.chat.completions.create({
+    model,
+    temperature: 0,
+    stream: true,
+    messages: [
+      {
+        role: "system",
+        content:
+          "Кратко по-русски сообщи пользователю результат инструмента. " +
+          "Не выдумывай ничего сверх результата.",
+      },
+      { role: "user", content: `Запрос: ${text}\nРезультат инструмента: ${result}` },
+    ],
+  });
+  for await (const chunk of stream) {
+    const t = chunk.choices[0]?.delta?.content;
+    if (t) onToken?.(t);
+  }
+  onState?.("idle");
+}

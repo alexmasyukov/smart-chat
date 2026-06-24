@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { McpHub } from "./mcp.js";
 import { listModels } from "./models.js";
-import { SYSTEM_PROMPT, runChatTurn } from "./chat.js";
+import { SYSTEM_PROMPT, runChatTurn, runRoutedTurn } from "./chat.js";
 import { PROVIDERS, getClient, LMSTUDIO_URL } from "./clients.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -122,14 +122,6 @@ async function handleChat(req, res) {
 
   busy = true;
 
-  // Stateless: новый массив на каждый запрос — только system + текущий user.
-  // (внутри хода runChatTurn временно добавляет ответы/результаты инструментов,
-  //  но между сообщениями ничего не сохраняется)
-  const messages = [
-    { role: "system", content: SYSTEM_PROMPT },
-    { role: "user", content: text },
-  ];
-
   let closed = false;
   req.on("close", () => (closed = true));
 
@@ -142,17 +134,24 @@ async function handleChat(req, res) {
   // облако узнаёт, что начался новый ход (по нему чистит пузырь)
   broadcast("prompt", { text });
 
+  const callbacks = {
+    onState: (value) => fan("state", { value }),
+    onToken: (t) => fan("token", { text: t }),
+    onTool: (info) => fan("tool", info),
+  };
+
   try {
-    await runChatTurn({
-      client,
-      provider,
-      model: reqModel,
-      hub,
-      messages,
-      onState: (value) => fan("state", { value }),
-      onToken: (t) => fan("token", { text: t }),
-      onTool: (info) => fan("tool", info),
-    });
+    if (provider === "local") {
+      // Слабые локальные модели: двухпроходная маршрутизация (классификация → вызов).
+      await runRoutedTurn({ client, model: reqModel, hub, text, ...callbacks });
+    } else {
+      // Облако: один проход с tool-calling (stateless — system + текущий user).
+      const messages = [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: text },
+      ];
+      await runChatTurn({ client, provider, model: reqModel, hub, messages, ...callbacks });
+    }
     fan("done", {});
   } catch (err) {
     fan("error", { message: err.message });
