@@ -88,56 +88,24 @@ export async function runChatTurn({ client, provider, model, hub, messages, onSt
 }
 
 // ---------------------------------------------------------------------------
-// Двухпроходная маршрутизация для слабых (локальных) моделей.
-// Список инструментов и описания берутся ДИНАМИЧЕСКИ из MCP — новые
-// инструменты подхватываются автоматически, без правок кода.
-// Проход 1: классификация запроса в один из инструментов (или none).
-// Проход 2: детерминированный вызов выбранного инструмента + озвучка результата.
+// Двухзапросная маршрутизация для слабых (локальных) моделей.
+// Список инструментов берётся ДИНАМИЧЕСКИ из MCP.
+// Запрос 1: с системным промптом — сопоставь запрос с инструментами, верни
+//           имя одного самого подходящего (или none). Только определить.
+// Запрос 2: НОВЫЙ запрос без системного промпта — «Запусти инструмент X» +
+//           tools; модель гарантированно делает tool-call, мы его исполняем.
 // ---------------------------------------------------------------------------
 
-function tokenize(s) {
-  return (s.toLowerCase().match(/[a-zа-яё]{3,}/giu) || []);
-}
-
-// Индекс: слово → множество инструментов, у которых оно есть (имя + описание).
-function buildTermIndex(tools) {
-  const idx = new Map();
-  for (const t of tools) {
-    const name = t.function.name;
-    const terms = new Set([
-      ...tokenize(name.replace(/_/g, " ")),
-      ...tokenize(t.function.description || ""),
-    ]);
-    for (const term of terms) {
-      if (!idx.has(term)) idx.set(term, new Set());
-      idx.get(term).add(name);
-    }
-  }
-  return idx;
-}
-
-// Быстрый детерминированный путь: если в запросе есть слово, ПРИНАДЛЕЖАЩЕЕ ровно
-// одному инструменту (нетворк, network, компоненты…), сразу роутим к нему.
-// Неоднозначные слова (адсв есть у двух) и общие (проекты) пропускаем — их решит модель.
-function keywordRoute(tools, text) {
-  const idx = buildTermIndex(tools);
-  const hits = new Set();
-  for (const w of tokenize(text)) {
-    const set = idx.get(w);
-    if (set && set.size === 1) hits.add([...set][0]);
-  }
-  return hits.size === 1 ? [...hits][0] : null;
-}
-
-// Классификация по живому списку инструментов: строго один из enum (structured output).
+// Запрос 1: выбрать один инструмент (или none) через structured output.
 async function classify(client, model, tools, text) {
   const names = tools.map((t) => t.function.name);
   const list = tools.map((t) => `- ${t.function.name}: ${t.function.description || ""}`).join("\n");
   const prompt =
-    `Реши, нужен ли инструмент для запроса, и если да — выбери самый подходящий.\n` +
-    `Доступные инструменты:\n${list}\n` +
-    `needsTool=false для приветствия, благодарности, болтовни или если ничего не подходит.\n` +
-    `Слова «открой», «запусти», «покажи» означают запуск. Учитывай уточнения: ADSW/адсв, Network/нетворк.`;
+    `Сопоставь запрос пользователя с инструментами и выбери ОДИН самый подходящий.\n` +
+    `Инструменты:\n${list}\n` +
+    `Слова «открой», «запусти», «покажи» означают запуск. Учитывай уточнения (ADSW/адсв, Network/нетворк).\n` +
+    `Если ни один не подходит (приветствие, болтовня, не по теме) — верни none.\n` +
+    `Верни только поле tool.`;
   const schema = {
     type: "json_schema",
     json_schema: {
@@ -145,11 +113,8 @@ async function classify(client, model, tools, text) {
       strict: true,
       schema: {
         type: "object",
-        properties: {
-          needsTool: { type: "boolean" },
-          tool: { type: "string", enum: names },
-        },
-        required: ["needsTool", "tool"],
+        properties: { tool: { type: "string", enum: [...names, "none"] } },
+        required: ["tool"],
         additionalProperties: false,
       },
     },
@@ -160,30 +125,22 @@ async function classify(client, model, tools, text) {
   ];
 
   try {
-    const cls = await client.chat.completions.create({
-      model,
-      temperature: 0,
-      messages,
-      response_format: schema,
-    });
+    const cls = await client.chat.completions.create({ model, temperature: 0, messages, response_format: schema });
     const parsed = JSON.parse(cls.choices[0]?.message?.content || "{}");
-    if (!parsed.needsTool) return "none";
-    if (names.includes(parsed.tool)) return parsed.tool;
+    if (parsed.tool === "none" || names.includes(parsed.tool)) return parsed.tool;
   } catch {
-    // structured output не поддержан/сломался — фолбэк ниже
+    // structured output не поддержан — фолбэк ниже
   }
-  // Фолбэк: свободный ответ, ищем имя инструмента в тексте.
   const cls = await client.chat.completions.create({ model, temperature: 0, messages });
   const raw = (cls.choices[0]?.message?.content || "").toLowerCase();
   return names.find((n) => raw.includes(n.toLowerCase())) || "none";
 }
 
-export async function runRoutedTurn({ client, model, hub, text, onState, onToken, onTool }) {
+export async function runRoutedTurn({ client, provider, model, hub, text, onState, onToken, onTool }) {
   onState?.("thinking");
 
-  // --- Проход 1: сначала уникальное ключевое слово (без модели), иначе классификатор ---
-  const tool =
-    keywordRoute(hub.openaiTools, text) || (await classify(client, model, hub.openaiTools, text));
+  // --- Запрос 1: определить инструмент (или none) ---
+  const tool = await classify(client, model, hub.openaiTools, text);
 
   // Ничего не подошло — обычный текстовый ответ.
   if (tool === "none") {
@@ -205,30 +162,9 @@ export async function runRoutedTurn({ client, model, hub, text, onState, onToken
     return;
   }
 
-  // --- Проход 2: детерминированный вызов выбранного инструмента + озвучка ---
-  onState?.("working");
-  onTool?.({ name: tool, args: "{}", phase: "start" });
-  const result = await hub.callTool(tool, {});
-  onTool?.({ name: tool, phase: "done", result });
-
-  onState?.("talking");
-  const stream = await client.chat.completions.create({
-    model,
-    temperature: 0,
-    stream: true,
-    messages: [
-      {
-        role: "system",
-        content:
-          "Кратко по-русски сообщи пользователю результат инструмента. " +
-          "Не выдумывай ничего сверх результата.",
-      },
-      { role: "user", content: `Запрос: ${text}\nРезультат инструмента: ${result}` },
-    ],
-  });
-  for await (const chunk of stream) {
-    const t = chunk.choices[0]?.delta?.content;
-    if (t) onToken?.(t);
-  }
-  onState?.("idle");
+  // --- Запрос 2: новый запрос без системного промпта, строго «Запусти инструмент X» ---
+  // Модель гарантированно вызывает указанный инструмент; runChatTurn его исполнит и
+  // озвучит результат (цикл tool-calling). Имя инструмента берём из запроса 1.
+  const messages = [{ role: "user", content: `Запусти инструмент ${tool}. Ответь по-русски.` }];
+  await runChatTurn({ client, provider, model, hub, messages, onState, onToken, onTool });
 }

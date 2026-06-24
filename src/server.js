@@ -143,7 +143,7 @@ async function handleChat(req, res) {
   try {
     if (provider === "local") {
       // Слабые локальные модели: двухпроходная маршрутизация (классификация → вызов).
-      await runRoutedTurn({ client, model: reqModel, hub, text, ...callbacks });
+      await runRoutedTurn({ client, provider, model: reqModel, hub, text, ...callbacks });
     } else {
       // Облако: один проход с tool-calling (stateless — system + текущий user).
       const messages = [
