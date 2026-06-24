@@ -54,7 +54,12 @@ export class McpHub {
 
     const { tools } = await client.listTools();
     for (const tool of tools) {
-      const fnName = sanitize(`${serverName}__${tool.name}`).slice(0, 64);
+      // Имя без префикса сервера (чтобы совпадало с промптом). Префикс добавляем
+      // только при коллизии имён между серверами.
+      let fnName = sanitize(tool.name).slice(0, 64);
+      if (this.toolMap.has(fnName)) {
+        fnName = sanitize(`${serverName}__${tool.name}`).slice(0, 64);
+      }
       this.toolMap.set(fnName, { client, toolName: tool.name });
       this.openaiTools.push({
         type: "function",
