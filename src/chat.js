@@ -1,16 +1,7 @@
 // Системный промпт: уходит с каждым отдельным сообщением (без истории чата).
-export const SYSTEM_PROMPT = `Ты — ассистент с доступом к инструментам. Выбирай инструмент по смыслу запроса;
-- show_components — раздел «Компоненты»;
-- show_projects — раздел «Проекты»;
-- show_rag — раздел «RAG-система», "рак", "рак система";
-- open_adsw — открыть папку ADSW (адсв);
+export const SYSTEM_PROMPT = `Ты — ассистент с доступом к инструментам. Выбирай инструмент по смыслу запроса из доступных (их названия и описания даны в списке инструментов);
 Слова «открой», «запусти», «покажи» (и их формы) — эквивалентны и означают запуск команды;
-Если в запросе есть такое слово вместе с названием раздела/папки — обязательно вызови нужный инструмент;
-Примеры;
-- «покажи компоненты» / «открой компоненты» / «запусти компоненты» → show_components;
-- «покажи проекты» / «открой проекты» / «запусти проекты» → show_projects;
-- «покажи раг» / «открой рак» / «запусти rag» → show_rag;
-- «открой адсв» / «запусти adsw» / «покажи папку ADSW» → open_adsw;
+Если запрос подходит под какой-то инструмент — обязательно вызови именно его (учитывай уточнения: ADSW/адсв, Network/нетворк и т.п.);
 Вызывай один инструмент за раз. Если ничего не подходит — отвечай текстом;
 Всегда отвечай на русском языке;`;
 
@@ -98,105 +89,104 @@ export async function runChatTurn({ client, provider, model, hub, messages, onSt
 
 // ---------------------------------------------------------------------------
 // Двухпроходная маршрутизация для слабых (локальных) моделей.
-// Проход 1: классификация запроса в один ярлык (без инструментов — модели проще).
-// Проход 2: по ярлыку детерминированно вызываем нужный инструмент кодом и
-//           просим модель кратко озвучить результат по-русски.
+// Список инструментов и описания берутся ДИНАМИЧЕСКИ из MCP — новые
+// инструменты подхватываются автоматически, без правок кода.
+// Проход 1: классификация запроса в один из инструментов (или none).
+// Проход 2: детерминированный вызов выбранного инструмента + озвучка результата.
 // ---------------------------------------------------------------------------
 
-const SECTIONS = [
-  { label: "components", tool: "show_components", match: ["components", "компонент"] },
-  { label: "projects", tool: "show_projects", match: ["projects", "проект"] },
-  { label: "rag", tool: "show_rag", match: ["rag", "раг", "рак"] },
-  { label: "adsw", tool: "open_adsw", match: ["adsw", "адсв"] },
-];
-
-const CLASSIFY_PROMPT = `Ты — классификатор. По сообщению пользователя выбери ОДИН раздел:
-- components — речь о компонентах;
-- projects — речь о проектах;
-- rag — речь о RAG-системе (раг, рак, база знаний);
-- adsw — открыть папку ADSW (адсв);
-- none — обычный разговор/приветствие или ничего из перечисленного.
-Слова «открой», «запусти», «покажи» означают запуск и не меняют выбор раздела.
-Верни только поле section.`;
-
-const ROUTE_SCHEMA = {
-  type: "json_schema",
-  json_schema: {
-    name: "route",
-    strict: true,
-    schema: {
-      type: "object",
-      properties: { section: { type: "string", enum: ["components", "projects", "rag", "adsw", "none"] } },
-      required: ["section"],
-      additionalProperties: false,
-    },
-  },
-};
-
-// Находит реальное имя функции инструмента в хабе (с учётом возможного префикса).
-function resolveToolName(hub, bare) {
-  const t = hub.openaiTools.find(
-    (x) => x.function.name === bare || x.function.name.endsWith(`__${bare}`)
-  );
-  return t?.function.name || bare;
+function tokenize(s) {
+  return (s.toLowerCase().match(/[a-zа-яё]{3,}/giu) || []);
 }
 
-// Быстрый детерминированный проход: явное слово раздела в начале слова.
-// (граница слова, чтобы «рак» не ловился внутри «практика» и т.п.)
-function keywordSection(text) {
-  const t = text.toLowerCase();
-  for (const s of SECTIONS) {
-    for (const term of s.match) {
-      if (new RegExp(`(^|[^a-zа-яё])${term}`, "i").test(t)) return s.label;
+// Индекс: слово → множество инструментов, у которых оно есть (имя + описание).
+function buildTermIndex(tools) {
+  const idx = new Map();
+  for (const t of tools) {
+    const name = t.function.name;
+    const terms = new Set([
+      ...tokenize(name.replace(/_/g, " ")),
+      ...tokenize(t.function.description || ""),
+    ]);
+    for (const term of terms) {
+      if (!idx.has(term)) idx.set(term, new Set());
+      idx.get(term).add(name);
     }
   }
-  return null;
+  return idx;
 }
 
-// Классификация: сначала по ключевым словам, затем модель (structured output), затем фолбэк.
-async function classify(client, model, text) {
-  const kw = keywordSection(text);
-  if (kw) return kw;
+// Быстрый детерминированный путь: если в запросе есть слово, ПРИНАДЛЕЖАЩЕЕ ровно
+// одному инструменту (нетворк, network, компоненты…), сразу роутим к нему.
+// Неоднозначные слова (адсв есть у двух) и общие (проекты) пропускаем — их решит модель.
+function keywordRoute(tools, text) {
+  const idx = buildTermIndex(tools);
+  const hits = new Set();
+  for (const w of tokenize(text)) {
+    const set = idx.get(w);
+    if (set && set.size === 1) hits.add([...set][0]);
+  }
+  return hits.size === 1 ? [...hits][0] : null;
+}
+
+// Классификация по живому списку инструментов: строго один из enum (structured output).
+async function classify(client, model, tools, text) {
+  const names = tools.map((t) => t.function.name);
+  const list = tools.map((t) => `- ${t.function.name}: ${t.function.description || ""}`).join("\n");
+  const prompt =
+    `Реши, нужен ли инструмент для запроса, и если да — выбери самый подходящий.\n` +
+    `Доступные инструменты:\n${list}\n` +
+    `needsTool=false для приветствия, благодарности, болтовни или если ничего не подходит.\n` +
+    `Слова «открой», «запусти», «покажи» означают запуск. Учитывай уточнения: ADSW/адсв, Network/нетворк.`;
+  const schema = {
+    type: "json_schema",
+    json_schema: {
+      name: "route",
+      strict: true,
+      schema: {
+        type: "object",
+        properties: {
+          needsTool: { type: "boolean" },
+          tool: { type: "string", enum: names },
+        },
+        required: ["needsTool", "tool"],
+        additionalProperties: false,
+      },
+    },
+  };
+  const messages = [
+    { role: "system", content: prompt },
+    { role: "user", content: text },
+  ];
 
   try {
     const cls = await client.chat.completions.create({
       model,
       temperature: 0,
-      messages: [
-        { role: "system", content: CLASSIFY_PROMPT },
-        { role: "user", content: text },
-      ],
-      response_format: ROUTE_SCHEMA,
+      messages,
+      response_format: schema,
     });
     const parsed = JSON.parse(cls.choices[0]?.message?.content || "{}");
-    if (SECTIONS.some((s) => s.label === parsed.section) || parsed.section === "none") {
-      return parsed.section;
-    }
+    if (!parsed.needsTool) return "none";
+    if (names.includes(parsed.tool)) return parsed.tool;
   } catch {
-    // структурированный вывод не поддержан/сломался — фолбэк ниже
+    // structured output не поддержан/сломался — фолбэк ниже
   }
-  // Фолбэк: свободный ответ + сопоставление по подстроке.
-  const cls = await client.chat.completions.create({
-    model,
-    temperature: 0,
-    messages: [
-      { role: "system", content: CLASSIFY_PROMPT },
-      { role: "user", content: text },
-    ],
-  });
+  // Фолбэк: свободный ответ, ищем имя инструмента в тексте.
+  const cls = await client.chat.completions.create({ model, temperature: 0, messages });
   const raw = (cls.choices[0]?.message?.content || "").toLowerCase();
-  return SECTIONS.find((s) => s.match.some((m) => raw.includes(m)))?.label || "none";
+  return names.find((n) => raw.includes(n.toLowerCase())) || "none";
 }
 
 export async function runRoutedTurn({ client, model, hub, text, onState, onToken, onTool }) {
   onState?.("thinking");
 
-  // --- Проход 1: классификация (строго один раздел) ---
-  const section = await classify(client, model, text);
-  const hit = SECTIONS.find((s) => s.label === section);
+  // --- Проход 1: сначала уникальное ключевое слово (без модели), иначе классификатор ---
+  const tool =
+    keywordRoute(hub.openaiTools, text) || (await classify(client, model, hub.openaiTools, text));
 
   // Ничего не подошло — обычный текстовый ответ.
-  if (!hit) {
+  if (tool === "none") {
     onState?.("talking");
     const stream = await client.chat.completions.create({
       model,
@@ -215,12 +205,11 @@ export async function runRoutedTurn({ client, model, hub, text, onState, onToken
     return;
   }
 
-  // --- Проход 2: детерминированный вызов инструмента + озвучка результата ---
+  // --- Проход 2: детерминированный вызов выбранного инструмента + озвучка ---
   onState?.("working");
-  const fnName = resolveToolName(hub, hit.tool);
-  onTool?.({ name: fnName, args: "{}", phase: "start" });
-  const result = await hub.callTool(fnName, {});
-  onTool?.({ name: fnName, phase: "done", result });
+  onTool?.({ name: tool, args: "{}", phase: "start" });
+  const result = await hub.callTool(tool, {});
+  onTool?.({ name: tool, phase: "done", result });
 
   onState?.("talking");
   const stream = await client.chat.completions.create({
