@@ -52,43 +52,61 @@ final class EdgesClient {
                 return Seg(x1: CGFloat(x1), y1: CGFloat(y1),
                            x2: CGFloat(x2), y2: CGFloat(y2), horizontal: o == "H")
             }
+            let ts = (obj["ts"] as? Double) ?? 0
+            FileHandle.standardError.write(
+                "[overlay] frame ts=\(ts) segs=\(segs.count)\n".data(using: .utf8)!)
             DispatchQueue.main.async { self?.onSegments?(segs) }
         }.resume()
     }
 }
 
-// MARK: - Вид: рисует линии по нормализованным координатам
+// MARK: - Вид: рисует линии через CAShapeLayer (полная замена содержимого)
 
+// Каждый детект целиком заменяет `path` у слоёв — это атомарно перерисовывает
+// всё с нуля, поэтому старые линии физически не могут остаться призраками
+// (в отличие от drawRect на прозрачном окне, где буфер накапливался).
 final class LinesView: NSView {
-    private var segs: [Seg] = []
+    private let hLayer = CAShapeLayer()   // горизонтали — ярко-зелёные
+    private let vLayer = CAShapeLayer()   // вертикали — жёлто-зелёные
 
-    override var isFlipped: Bool { true }   // (0,0) сверху-слева, как в кадре
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        let host = CALayer()
+        host.isGeometryFlipped = true      // (0,0) сверху-слева, как в кадре детектора
+        layer = host                       // layer-hosting: сперва layer, потом wantsLayer
+        wantsLayer = true
 
-    func update(_ s: [Seg]) {
-        segs = s
-        needsDisplay = true
+        hLayer.strokeColor = NSColor(srgbRed: 0.15, green: 1.0, blue: 0.20, alpha: 0.95).cgColor
+        vLayer.strokeColor = NSColor(srgbRed: 0.75, green: 1.0, blue: 0.15, alpha: 0.95).cgColor
+        for lay in [hLayer, vLayer] {
+            lay.fillColor = NSColor.clear.cgColor
+            lay.lineWidth = 2
+            lay.lineCap = .round
+            lay.frame = bounds
+            host.addSublayer(lay)
+        }
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        // Стираем прошлый кадр до прозрачности: линии, пропавшие после нового
-        // детекта, не должны оставаться призраками на экране.
-        NSColor.clear.setFill()
-        dirtyRect.fill(using: .copy)
+    required init?(coder: NSCoder) { fatalError() }
 
+    func update(_ segs: [Seg]) {
         let w = bounds.width, h = bounds.height
+        let hp = CGMutablePath()
+        let vp = CGMutablePath()
         for s in segs {
-            let path = NSBezierPath()
-            path.lineWidth = 2
-            path.lineCapStyle = .round
-            path.move(to: CGPoint(x: s.x1 * w, y: s.y1 * h))
-            path.line(to: CGPoint(x: s.x2 * w, y: s.y2 * h))
-            if s.horizontal {
-                NSColor(srgbRed: 0.15, green: 1.0, blue: 0.20, alpha: 0.95).setStroke()
-            } else {
-                NSColor(srgbRed: 0.75, green: 1.0, blue: 0.15, alpha: 0.95).setStroke()
-            }
-            path.stroke()
+            let p1 = CGPoint(x: s.x1 * w, y: s.y1 * h)
+            let p2 = CGPoint(x: s.x2 * w, y: s.y2 * h)
+            let path = s.horizontal ? hp : vp
+            path.move(to: p1)
+            path.addLine(to: p2)
         }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)   // без плавных переходов — мгновенно
+        hLayer.frame = bounds
+        vLayer.frame = bounds
+        hLayer.path = hp                         // присваивание = полная замена кадра
+        vLayer.path = vp
+        CATransaction.commit()
     }
 }
 
@@ -109,12 +127,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.hasShadow = false
         window.level = .floating                 // поверх обычных окон, но безопасно
         window.ignoresMouseEvents = true         // click-through: не мешает работе
+        // КРИТИЧНО: прячем окно от screencapture. Иначе детектор снимает экран
+        // вместе с нашими зелёными линиями, переобнаруживает их как яркие грани и
+        // рисует снова — петля, из-за которой линии «не очищаются» никогда.
+        window.sharingType = .none
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
 
         view = LinesView(frame: NSRect(origin: .zero, size: screen.size))
-        // Layer-backing: без него прозрачное окно накапливает отрисовку и старые
-        // линии не стираются. С ним AppKit чистит слой перед каждой перерисовкой.
-        view.wantsLayer = true
         window.contentView = view
 
         client.onSegments = { [weak self] segs in self?.view.update(segs) }
