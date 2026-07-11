@@ -112,6 +112,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
 
         view = LinesView(frame: NSRect(origin: .zero, size: screen.size))
+        // Layer-backing: без него прозрачное окно накапливает отрисовку и старые
+        // линии не стираются. С ним AppKit чистит слой перед каждой перерисовкой.
+        view.wantsLayer = true
         window.contentView = view
 
         client.onSegments = { [weak self] segs in self?.view.update(segs) }
