@@ -18,9 +18,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import soundfile as sf
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# Короткий референс 3с: F5 быстрее (короче диффузия-последовательность),
-# качество/темп одобрены на слух. Полный 9с — ref/lily.wav.
-REF = os.path.join(HERE, "ref", "lily_3s.wav")
+# Короткий референс 3с + хвост тишины: F5 быстрее (короче последовательность),
+# паддинг даёт чистую границу «референс→генерация» (иначе глотается начало).
+REF = os.path.join(HERE, "ref", "lily_3s_pad.wav")
 CKPT = os.path.join(HERE, "ckpt", "model_212000.safetensors")
 VOCAB = os.path.join(HERE, "ckpt", "vocab.txt")
 OUT = os.path.join(HERE, "out")

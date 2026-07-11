@@ -36,7 +36,8 @@ def main() -> None:
 
     print(json.dumps(res, ensure_ascii=False, indent=2))
     if not a.no_open and res.get("out"):
-        subprocess.run(["open", res["out"]], check=False)
+        # afplay — системный плеер, без диалога Gatekeeper (в отличие от `open`)
+        subprocess.run(["afplay", res["out"]], check=False)
 
 
 if __name__ == "__main__":
