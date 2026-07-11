@@ -9,7 +9,7 @@ import Foundation
 final class PointsClient {
     private let base: String
     private var lastV = 0
-    var onData: (([[Double]], [Double]) -> Void)?
+    var onData: (([[Double]], [String], [Int]) -> Void)?
 
     init() {
         base = ProcessInfo.processInfo.environment["POINTS_URL"]
@@ -32,10 +32,11 @@ final class PointsClient {
                let v = obj["v"] as? Int,
                let pts = obj["points"] as? [[Double]] {
                 self.lastV = v
-                let lines = (obj["lines"] as? [Double]) ?? []
-                FileHandle.standardError.write("[overlay] v=\(v) points=\(pts.count) lines=\(lines.count)\n"
+                let kinds = (obj["kinds"] as? [String]) ?? Array(repeating: "base", count: pts.count)
+                let numbers = (obj["numbers"] as? [Int]) ?? Array(0..<pts.count)
+                FileHandle.standardError.write("[overlay] v=\(v) points=\(pts.count)\n"
                     .data(using: .utf8)!)
-                DispatchQueue.main.async { self.onData?(pts, lines) }
+                DispatchQueue.main.async { self.onData?(pts, kinds, numbers) }
             } else {
                 delay = 0.5                            // сервер не поднят — притормозим
             }
@@ -45,8 +46,8 @@ final class PointsClient {
 }
 
 final class PointsView: NSView {
-    private let dots = CAShapeLayer()
-    private let lines = CAShapeLayer()
+    private let dots = CAShapeLayer()          // base-точки, зелёные
+    private let probeDots = CAShapeLayer()     // probe-точки (несовпадение), оранжевые
     private let labels = CALayer()          // хост для подписей номеров точек
 
     override init(frame: NSRect) {
@@ -56,30 +57,33 @@ final class PointsView: NSView {
         wantsLayer = true
         dots.fillColor = NSColor(srgbRed: 0.15, green: 1.0, blue: 0.20, alpha: 0.95).cgColor
         dots.strokeColor = NSColor.clear.cgColor
-        lines.fillColor = NSColor.clear.cgColor
-        lines.strokeColor = NSColor(srgbRed: 0.15, green: 1.0, blue: 0.20, alpha: 0.95).cgColor
-        lines.lineWidth = 1
-        host.addSublayer(lines)
+        probeDots.fillColor = NSColor(srgbRed: 1.0, green: 0.55, blue: 0.0, alpha: 0.95).cgColor
+        probeDots.strokeColor = NSColor.clear.cgColor
         host.addSublayer(dots)
+        host.addSublayer(probeDots)
         host.addSublayer(labels)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func update(_ points: [[Double]], _ lineXs: [Double]) {
+    func update(_ points: [[Double]], _ kinds: [String], _ numbers: [Int]) {
         let w = bounds.width, h = bounds.height
         let r: CGFloat = 3
         let scale = self.window?.backingScaleFactor ?? 2.0
         let dotsPath = CGMutablePath()
+        let probePath = CGMutablePath()
         labels.sublayers?.forEach { $0.removeFromSuperlayer() }
         for (i, p) in points.enumerated() where p.count >= 2 {
             let x = CGFloat(p[0]) * w
             let y = (1 - CGFloat(p[1])) * h          // y детектора сверху вниз -> слой снизу вверх
-            dotsPath.addEllipse(in: CGRect(x: x - r, y: y - r, width: 2 * r, height: 2 * r))
+            let isProbe = i < kinds.count && kinds[i] == "probe"
+            let path = isProbe ? probePath : dotsPath
+            path.addEllipse(in: CGRect(x: x - r, y: y - r, width: 2 * r, height: 2 * r))
+            let num = i < numbers.count ? numbers[i] : i
 
             // Номер точки — маленький белый текст высотой ~2 точки, НАД ней.
             let label = CATextLayer()
-            label.string = "\(i)"
+            label.string = "\(num)"
             label.fontSize = 4 * r                     // высота текста ~2 диаметра точки
             label.foregroundColor = NSColor.white.cgColor
             label.alignmentMode = .center
@@ -88,18 +92,12 @@ final class PointsView: NSView {
             label.frame = CGRect(x: x - lw / 2, y: y + r + 2, width: lw, height: 4 * r + 2)
             labels.addSublayer(label)
         }
-        let linesPath = CGMutablePath()
-        for nx in lineXs {
-            let x = CGFloat(nx) * w
-            linesPath.move(to: CGPoint(x: x, y: 0))
-            linesPath.addLine(to: CGPoint(x: x, y: h))
-        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         dots.frame = bounds
         dots.path = dotsPath
-        lines.frame = bounds
-        lines.path = linesPath
+        probeDots.frame = bounds
+        probeDots.path = probePath
         labels.frame = bounds
         CATransaction.commit()
     }
@@ -123,7 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         view = PointsView(frame: NSRect(origin: .zero, size: screen.size))
         window.contentView = view
-        client.onData = { [weak self] pts, lns in self?.view.update(pts, lns) }
+        client.onData = { [weak self] pts, kinds, nums in self?.view.update(pts, kinds, nums) }
         client.start()
         window.orderFrontRegardless()
     }
