@@ -78,7 +78,8 @@ def ref_features(ref: str) -> tuple:
 
 
 def synth(text: str, out: str, ref: str, lang: str, temperature: float,
-          top_k: int, top_p: float, rep_pen: float, seed: int) -> dict:
+          top_k: int, top_p: float, rep_pen: float, seed: int,
+          steps: int = 26, cfg: float = 0.7) -> dict:
     if not os.path.isabs(out):
         out = os.path.join(HERE, out)
     t0 = time.time()
@@ -96,8 +97,9 @@ def synth(text: str, out: str, ref: str, lang: str, temperature: float,
     mu = MODEL.s2a.build_mu(mx.array(codes[None]), mx.array(latent), T_ref)
     mx.random.seed(seed)
     z = mx.random.normal((1, 80, mu.shape[1]))
+    # steps — число шагов flow-matching солвера (дефолт 26), cfg — guidance.
     mel = MODEL.s2a.solve_euler(z, mx.transpose(ref_mel, (0, 2, 1)), mu, style,
-                                mx.linspace(0, 1, 26), cfg=0.7)[:, :, T_ref:]
+                                mx.linspace(0, 1, steps), cfg=cfg)[:, :, T_ref:]
     wav = MODEL.voc(mel)
     mx.eval(wav)
     wav = np.array(wav).reshape(-1)
@@ -174,6 +176,8 @@ class Handler(BaseHTTPRequestHandler):
                 top_p=float(p.get("top_p", 0.8)),
                 rep_pen=float(p.get("rep_pen", 10.0)),
                 seed=int(p.get("seed", 0)),
+                steps=int(p.get("steps", 26)),
+                cfg=float(p.get("cfg", 0.7)),
             )
             print(f"[gen] «{text[:60]}» -> {res['out']} "
                   f"({res['gen_sec']}с, rtf={res['rtf']})", flush=True)
