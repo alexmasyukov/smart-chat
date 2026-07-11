@@ -15,11 +15,24 @@
 """
 import json
 import os
+import re
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from supertonic import TTS
+
+# Ручные ударения: Supertonic слушается комбинирующего акута U+0301 после ударной
+# гласной (за́мок ≠ замо́к). Печатать его неудобно, поэтому принимаем ASCII-разметку
+# «+» перед ударной гласной (как в RHVoice/eSpeak) и заменяем на гласную + ◌́.
+# Плюс: «ё» не входит в набор символов модели — маппим на «е»/«Е».
+_ACUTE = "́"
+_VOWELS = "аеиоуыэюяАЕИОУЫЭЮЯ"
+
+
+def apply_stress(text: str) -> str:
+    text = text.replace("ё", "е").replace("Ё", "Е")
+    return re.sub(r"\+([" + _VOWELS + r"])", r"\1" + _ACUTE, text)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(HERE, "out")
@@ -48,6 +61,7 @@ def synth(text: str, out: str, voice: str, style_json: str | None, lang: str,
     if not os.path.isabs(out):
         out = os.path.join(HERE, out)
     style = style_for(voice, style_json)
+    text = apply_stress(text)   # «+гласная» -> ударение, «ё» -> «е»
     t0 = time.time()
     wav, _ = TTS_MODEL.synthesize(text, voice_style=style, total_steps=steps,
                                   speed=speed, lang=lang)

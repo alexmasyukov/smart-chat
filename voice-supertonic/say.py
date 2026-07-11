@@ -18,6 +18,7 @@ Supertone Voice Builder, который отдаёт .json со style-векто
     python say.py "Текст" --style-json path/to/voice.json
 """
 import argparse
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -26,6 +27,15 @@ from supertonic import TTS
 
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "out"
+
+# Ручные ударения: «+» перед ударной гласной -> комбинирующий акут U+0301
+# (Supertonic его слушается: за́мок ≠ замо́к). «ё» не в наборе модели -> «е».
+_VOWELS = "аеиоуыэюяАЕИОУЫЭЮЯ"
+
+
+def apply_stress(text: str) -> str:
+    text = text.replace("ё", "е").replace("Ё", "Е")
+    return re.sub(r"\+([" + _VOWELS + r"])", r"\1́", text)
 
 
 def main() -> None:
@@ -57,8 +67,8 @@ def main() -> None:
     load_s = time.time() - t0
 
     t0 = time.time()
-    wav, dur = tts.synthesize(a.text, voice_style=style, total_steps=a.steps,
-                              speed=a.speed, lang=a.lang)
+    wav, dur = tts.synthesize(apply_stress(a.text), voice_style=style,
+                              total_steps=a.steps, speed=a.speed, lang=a.lang)
     gen_s = time.time() - t0
 
     tts.save_audio(wav, str(out_path))
