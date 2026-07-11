@@ -70,6 +70,11 @@ final class LinesView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        // Стираем прошлый кадр до прозрачности: линии, пропавшие после нового
+        // детекта, не должны оставаться призраками на экране.
+        NSColor.clear.setFill()
+        dirtyRect.fill(using: .copy)
+
         let w = bounds.width, h = bounds.height
         for s in segs {
             let path = NSBezierPath()

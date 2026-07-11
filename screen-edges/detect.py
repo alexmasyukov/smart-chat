@@ -53,7 +53,7 @@ INTERVAL = float(os.environ.get("SE_INTERVAL", "2.0"))   # период съём
 WORK_WIDTH = int(os.environ.get("SE_WORK_WIDTH", "1600"))  # рабочая ширина кадра
 MIN_LEN_FRAC = float(os.environ.get("SE_MIN_LEN_FRAC", "0.08"))  # мин. длина = доля ширины
 ANGLE_TOL = float(os.environ.get("SE_ANGLE_TOL", "8"))    # ±градусов до оси = H/V
-MIN_CONTRAST = float(os.environ.get("SE_MIN_CONTRAST", "12"))  # мин. контраст грани (0..255)
+MIN_CONTRAST = float(os.environ.get("SE_MIN_CONTRAST", "8"))  # мин. контраст грани (0..255)
 Y_TOL_FRAC = float(os.environ.get("SE_Y_TOL_FRAC", "0.004"))   # слияние: разброс поперёк
 GAP_FRAC = float(os.environ.get("SE_GAP_FRAC", "0.012"))       # слияние: макс. разрыв вдоль
 KEEP_DIAGONAL = os.environ.get("SE_KEEP_DIAGONAL", "0") == "1"  # оставлять ли диагонали
