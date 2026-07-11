@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""Детектор длинных ярких линий (граней) на экране — «полки и стены» для кота.
+"""Детектор длинных линий интерфейса (горизонт/вертикаль) — «полки и стены» кота.
 
-Каждые SE_INTERVAL секунд снимает экран нативным `screencapture`, ищет длинные
-прямые контрастные грани (LSD из OpenCV), классифицирует их на горизонтальные
-(H — по ним кот ходит) и вертикальные (V — по ним лезет), сливает коллинеарные
-куски в цельные отрезки и отдаёт результат по HTTP.
+Каждые SE_INTERVAL секунд снимает экран нативным `screencapture`, находит длинные
+ГОРИЗОНТАЛЬНЫЕ (H — по ним кот ходит) и ВЕРТИКАЛЬНЫЕ (V — по ним лезет) линии
+интерфейса и отдаёт их по HTTP. Диагонали не ищем — только сетка интерфейса.
 
-Почему LSD, а не Hough: на UI-скриншотах LSD даёт меньше дублей, субпиксельно
-точен и не требует подбора порогов Canny (ресёрч + замер на реальном экране:
-весь цикл ~40мс, поэтому раз в 2с — почти бесплатно).
+Пайплайн — морфология (надёжна на интерфейсах: панели, вкладки, карточки, меню):
+    grayscale
+      → adaptive threshold (обе полярности: и тёмные линии, и светлые)
+      → морф-открытие горизонтальным / вертикальным ядром  (оставляет только H/V)
+      → компоненты связности                                 (каждая = отрезок)
+      → фильтры: длина ≥15%, вытянутость, ОДНОРОДНОСТЬ ВДОЛЬ (иначе это текст),
+                 контраст ПОПЕРЁК (линия выделяется на фоне)
+      → слияние коллинеарных кусков с малым разрывом
 
-«Яркая линия» — это НЕ абсолютная светлота (тёмная тема даёт среднюю яркость ~40),
-а высокий локальный КОНТРАСТ грани: линия заметно выделяется на фоне.
+Ключевой фильтр текста: у сплошного разделителя яркость вдоль линии однородна
+(низкий std), у строки текста — прыгает (буквы/пробелы). Так линии отделяются
+от текста, из-за которого наивная морфология обводит каждую строку.
 
 Координаты в выдаче — НОРМАЛИЗОВАННЫЕ (0..1, y сверху вниз), не в retina-пикселях.
 Так потребитель (Swift-оверлей, кот) масштабирует их под свои point-размеры окна
@@ -51,12 +56,14 @@ HOST = os.environ.get("SE_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SE_PORT", "8130"))
 INTERVAL = float(os.environ.get("SE_INTERVAL", "2.0"))   # период съёмки, сек
 WORK_WIDTH = int(os.environ.get("SE_WORK_WIDTH", "1600"))  # рабочая ширина кадра
-MIN_LEN_FRAC = float(os.environ.get("SE_MIN_LEN_FRAC", "0.08"))  # мин. длина = доля ширины
-ANGLE_TOL = float(os.environ.get("SE_ANGLE_TOL", "8"))    # ±градусов до оси = H/V
-MIN_CONTRAST = float(os.environ.get("SE_MIN_CONTRAST", "8"))  # мин. контраст грани (0..255)
-Y_TOL_FRAC = float(os.environ.get("SE_Y_TOL_FRAC", "0.004"))   # слияние: разброс поперёк
-GAP_FRAC = float(os.environ.get("SE_GAP_FRAC", "0.005"))       # слияние: макс. разрыв вдоль
-KEEP_DIAGONAL = os.environ.get("SE_KEEP_DIAGONAL", "0") == "1"  # оставлять ли диагонали
+MIN_LEN_FRAC = float(os.environ.get("SE_MIN_LEN_FRAC", "0.40"))  # мин. длина = доля стороны
+MIN_CONTRAST = float(os.environ.get("SE_MIN_CONTRAST", "8"))  # мин. контраст поперёк (0..255)
+ALONG_STD_MAX = float(os.environ.get("SE_ALONG_STD", "22"))   # макс. разброс ВДОЛЬ (отсев текста)
+MIN_ASPECT = float(os.environ.get("SE_MIN_ASPECT", "3"))      # вытянутость компонента (длина/толщина)
+ADAPT_BLOCK = int(os.environ.get("SE_ADAPT_BLOCK", "15"))     # окно adaptive threshold (нечёт.)
+MORPH_FRAC = float(os.environ.get("SE_MORPH_FRAC", "0.05"))   # длина морф-ядра = доля стороны
+Y_TOL_FRAC = float(os.environ.get("SE_Y_TOL_FRAC", "0.004"))  # слияние: разброс поперёк
+GAP_FRAC = float(os.environ.get("SE_GAP_FRAC", "0.005"))      # слияние: макс. разрыв вдоль
 
 _CAP_PATH = os.path.join(tempfile.gettempdir(), "screen_edges_frame.png")
 
@@ -148,59 +155,99 @@ def _merge_axis(items, const_tol, gap):
     return out
 
 
+def _along_std(gray, a, b, const, horizontal, sw, sh):
+    """Разброс яркости ВДОЛЬ линии. У сплошного разделителя он мал, у строки
+    текста велик (буквы/пробелы чередуются) — так отсеиваем текст."""
+    if horizontal:
+        xs = np.clip(np.arange(int(a), int(b)), 0, sw - 1)
+        y = int(np.clip(const, 0, sh - 1))
+        vals = gray[y, xs]
+    else:
+        ys = np.clip(np.arange(int(a), int(b)), 0, sh - 1)
+        x = int(np.clip(const, 0, sw - 1))
+        vals = gray[ys, x]
+    return float(vals.std()) if vals.size > 2 else 999.0
+
+
+def _line_mask(bw, horizontal, sw, sh):
+    """Морфологическое открытие: оставляет только длинные H- или V-структуры."""
+    if horizontal:
+        k = cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, int(MORPH_FRAC * sw)), 1))
+    else:
+        k = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(10, int(MORPH_FRAC * sh))))
+    return cv2.morphologyEx(bw, cv2.MORPH_OPEN, k)
+
+
+def _mask_components(mask, horizontal):
+    """Компоненты связности маски -> список (const, a, b) в рабочих пикселях.
+    Для H: const=y, [a,b]=[x..x+w]; для V: const=x, [a,b]=[y..y+h].
+    Отсекает невытянутые кляксы (не линии)."""
+    n, _, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    out = []
+    for i in range(1, n):
+        x, y, w, h, _area = stats[i]
+        if horizontal:
+            if w < MIN_ASPECT * max(h, 1):
+                continue
+            out.append((y + h / 2, float(x), float(x + w)))
+        else:
+            if h < MIN_ASPECT * max(w, 1):
+                continue
+            out.append((x + w / 2, float(y), float(y + h)))
+    return out
+
+
 def detect(img):
-    """BGR-кадр -> список сегментов в НОРМАЛИЗОВАННЫХ координатах (0..1)."""
+    """BGR-кадр -> список сегментов (только H/V) в НОРМАЛИЗОВАННЫХ коорд. (0..1).
+
+    Пайплайн (морфология — надёжна на интерфейсах):
+    grayscale → adaptive threshold (обе полярности) → морф-открытие H/V ядром →
+    компоненты связности → фильтр (длина ≥15%, вытянутость, однородность вдоль=
+    не текст, контраст поперёк) → слияние коллинеарных."""
     H, W = img.shape[:2]
     scale = WORK_WIDTH / W
     small = cv2.resize(img, (int(W * scale), int(H * scale)),
                        interpolation=cv2.INTER_AREA)
     gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
     sh, sw = gray.shape
-    min_len = MIN_LEN_FRAC * sw
 
-    lsd = cv2.createLineSegmentDetector()
-    raw, _, _, _ = lsd.detect(gray)
+    # Бинаризация обеих полярностей: ловим и тёмные линии на светлом фоне, и
+    # светлые на тёмном (работает и на светлой, и на тёмной теме).
+    blk = ADAPT_BLOCK if ADAPT_BLOCK % 2 else ADAPT_BLOCK + 1
+    bw = cv2.bitwise_or(
+        cv2.adaptiveThreshold(255 - gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+                              cv2.THRESH_BINARY, blk, -2),
+        cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+                              cv2.THRESH_BINARY, blk, -2))
 
-    horiz, vert, diag = [], [], []
-    if raw is not None:
-        for l in raw:
-            x1, y1, x2, y2 = l[0]
-            if math.hypot(x2 - x1, y2 - y1) < min_len:
-                continue
-            ang = abs(math.degrees(math.atan2(y2 - y1, x2 - x1)))
-            is_h = ang < ANGLE_TOL or ang > 180 - ANGLE_TOL
-            is_v = abs(ang - 90) < ANGLE_TOL
-            if not (is_h or is_v) and not KEEP_DIAGONAL:
-                continue
-            con = _edge_contrast(gray, x1, y1, x2, y2, sw, sh)
-            if con < MIN_CONTRAST:
-                continue
-            if is_h:
-                yc = (y1 + y2) / 2
-                horiz.append((yc, min(x1, x2), max(x1, x2), con))
-            elif is_v:
-                xc = (x1 + x2) / 2
-                vert.append((xc, min(y1, y2), max(y1, y2), con))
-            else:
-                diag.append((x1, y1, x2, y2, con))
+    h_items = _mask_components(_line_mask(bw, True, sw, sh), True)
+    v_items = _mask_components(_line_mask(bw, False, sw, sh), False)
 
-    y_tol = Y_TOL_FRAC * sh
-    x_tol = Y_TOL_FRAC * sw
     gap = GAP_FRAC * sw
-    merged_h = _merge_axis(horiz, y_tol, gap)
-    merged_v = _merge_axis(vert, x_tol, gap)
+    merged_h = _merge_axis([(c, a, b, 0) for c, a, b in h_items], Y_TOL_FRAC * sh, gap)
+    merged_v = _merge_axis([(c, a, b, 0) for c, a, b in v_items], Y_TOL_FRAC * sw, gap)
 
+    min_len_h = MIN_LEN_FRAC * sw
+    min_len_v = MIN_LEN_FRAC * sh
     segs = []
-    for yc, xa, xb, con in merged_h:
-        if (xb - xa) < min_len:
+    for yc, xa, xb, _ in merged_h:
+        if (xb - xa) < min_len_h:
+            continue
+        if _along_std(gray, xa, xb, yc, True, sw, sh) > ALONG_STD_MAX:   # это текст
+            continue
+        con = _edge_contrast(gray, xa, yc, xb, yc, sw, sh)
+        if con < MIN_CONTRAST:
             continue
         segs.append(_seg(xa, yc, xb, yc, "H", con, sw, sh))
-    for xc, ya, yb, con in merged_v:
-        if (yb - ya) < min_len:
+    for xc, ya, yb, _ in merged_v:
+        if (yb - ya) < min_len_v:
+            continue
+        if _along_std(gray, ya, yb, xc, False, sw, sh) > ALONG_STD_MAX:
+            continue
+        con = _edge_contrast(gray, xc, ya, xc, yb, sw, sh)
+        if con < MIN_CONTRAST:
             continue
         segs.append(_seg(xc, ya, xc, yb, "V", con, sw, sh))
-    for x1, y1, x2, y2, con in diag:               # только если KEEP_DIAGONAL
-        segs.append(_seg(x1, y1, x2, y2, "D", con, sw, sh))
 
     # длинные и контрастные — вперёд (полезнее для кота)
     segs.sort(key=lambda s: s["len"] * (1 + s["contrast"] / 255), reverse=True)

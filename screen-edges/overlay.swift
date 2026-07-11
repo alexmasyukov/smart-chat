@@ -72,7 +72,6 @@ final class LinesView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         let host = CALayer()
-        host.isGeometryFlipped = true      // (0,0) сверху-слева, как в кадре детектора
         layer = host                       // layer-hosting: сперва layer, потом wantsLayer
         wantsLayer = true
 
@@ -93,9 +92,11 @@ final class LinesView: NSView {
         let w = bounds.width, h = bounds.height
         let hp = CGMutablePath()
         let vp = CGMutablePath()
+        // Координаты детектора: y сверху вниз. Слой CALayer: y снизу вверх.
+        // Поэтому y инвертируем напрямую (без isGeometryFlipped — он давал сдвиг).
         for s in segs {
-            let p1 = CGPoint(x: s.x1 * w, y: s.y1 * h)
-            let p2 = CGPoint(x: s.x2 * w, y: s.y2 * h)
+            let p1 = CGPoint(x: s.x1 * w, y: (1 - s.y1) * h)
+            let p2 = CGPoint(x: s.x2 * w, y: (1 - s.y2) * h)
             let path = s.horizontal ? hp : vp
             path.move(to: p1)
             path.addLine(to: p2)
