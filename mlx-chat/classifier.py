@@ -39,38 +39,39 @@ REPO = os.environ.get("CLF_MODEL")
 # Короткий промпт для дообученной модели (тот же, что в обучении — ft/gen_dataset.py).
 SHORT_SYSTEM = "Ты — классификатор. По запросу пользователя верни ровно одно имя инструмента из набора или none. Только имя, без пояснений."
 
-# --- Инструменты (тестовые; имя -> краткое описание для промпта) -------------
+# --- Инструменты: имя -> (описание для промпта, папка для открытия) ----------
+# Боевой набор из commands.txt. Классификатор возвращает ИМЯ; открытие папки —
+# на стороне вызывающего (COMMANDS[name] → путь).
 TOOLS = [
-    ("show_components",      "показать компоненты."),
-    ("show_projects",        "показать проекты (общие, без уточнения ADSW/Network)."),
-    ("show_rag",             "показать RAG-систему (в запросе «раг», «рак», RAG)."),
-    ("show_adsw_projects",   "показать проекты ADSW (в запросе «адсв»/ADSW)."),
-    ("show_network_projects","показать проекты Network (в запросе «нетворк»/Network)."),
-    ("open_adsw",            "открыть ПАПКУ ADSW в Finder (только если явно про папку/folder/Finder)."),
+    ("open_adsw",       "открыть папку ADSW (адсв).",                  "/Users/alex/arenadata-adsw"),
+    ("open_network",    "открыть папку Network (нетворк).",            "/Users/alex/arenadata-network"),
+    ("open_components", "открыть папку с компонентами / библиотекой UI.", "/Users/alex/arenadata-ui"),
+    ("open_projects",   "открыть папку с проектами (my-pro).",         "/Users/alex/my-pro"),
 ]
-TOOL_NAMES = [name for name, _ in TOOLS]
+TOOL_NAMES = [name for name, _, _ in TOOLS]
+COMMANDS = {name: folder for name, _, folder in TOOLS}  # имя → папка
 
-# Few-shot: формулировки ОТЛИЧНЫ от реальных запросов (учим паттернам, не подгонка).
+# Few-shot для --base режима (базовая 1.2B без обучения). Формулировки живые.
 FEWSHOT = [
-    ("выведи список компонентов",   "show_components"),
-    ("какие есть проекты",          "show_projects"),
-    ("проекты в адсв",              "show_adsw_projects"),
-    ("network проекты покажи",      "show_network_projects"),
-    ("открой rag",                  "show_rag"),
-    ("зайди в папку adsw",          "open_adsw"),
-    ("здравствуй",                  "none"),
-    ("доброе утро",                 "none"),
-    ("ок, спасибо большое",         "none"),
-    ("как твои дела сегодня",       "none"),
-    ("что нового",                  "none"),
-    ("расскажи что-нибудь смешное", "none"),
-    ("который сейчас час",          "none"),
-    ("пока",                        "none"),
+    ("открой папку адсв",             "open_adsw"),
+    ("зайди в adsw",                  "open_adsw"),
+    ("открой нетворк",                "open_network"),
+    ("покажи папку network",          "open_network"),
+    ("открой компоненты",             "open_components"),
+    ("открой библиотеку компонентов", "open_components"),
+    ("открой мои проекты",            "open_projects"),
+    ("открой my-pro",                 "open_projects"),
+    ("здравствуй",                    "none"),
+    ("спасибо большое",               "none"),
+    ("открой youtube",                "none"),
+    ("открой браузер",                "none"),
+    ("расскажи анекдот",              "none"),
+    ("который сейчас час",            "none"),
 ]
 
 
 def build_system():
-    tools_block = "\n".join(f"- {name} — {desc}" for name, desc in TOOLS)
+    tools_block = "\n".join(f"- {name} — {desc}" for name, desc, _ in TOOLS)
     examples = "\n".join(f"{q} → {t}" for q, t in FEWSHOT)
     return f"""Ты — классификатор. По запросу пользователя верни ровно ОДНО имя инструмента из списка, либо none. Ты ничего не запускаешь, только называешь подходящее.
 
@@ -80,11 +81,10 @@ def build_system():
 {tools_block}
 
 Правила:
-- Глаголы «открой», «запусти», «покажи» означают запуск раздела и сами по себе НЕ значат open_adsw.
-- Уточнение «адсв»/ADSW рядом с «проект» = show_adsw_projects; «нетворк»/Network рядом с «проект» = show_network_projects.
-- Приветствие, благодарность, болтовня, вопрос не по теме → none.
+- Все инструменты открывают конкретную папку. Выбирай по тому, о какой папке речь (адсв/нетворк/компоненты/проекты).
+- Посторонние команды (открой youtube, браузер, документы и т.п.) и любая болтовня → none.
 
-Примеры (другие формулировки):
+Примеры:
 {examples}"""
 
 
@@ -162,18 +162,17 @@ def serve(clf, port):
 
 # --- Встроенный самотест ----------------------------------------------------
 SELFTEST = [
-    ("покажи компоненты", "show_components"),
-    ("открой проекты", "show_projects"),
-    ("покажи проекты адсв", "show_adsw_projects"),
-    ("открой адсв проекты", "show_adsw_projects"),
-    ("проекты адсв", "show_adsw_projects"),
-    ("проекты нетворк", "show_network_projects"),
-    ("запусти раг", "show_rag"),
-    ("покажи рак систему", "show_rag"),
     ("открой папку адсв", "open_adsw"),
-    ("открой адсв в finder", "open_adsw"),
+    ("зайди в adsw", "open_adsw"),
+    ("открой нетворк", "open_network"),
+    ("покажи папку network", "open_network"),
+    ("открой компоненты", "open_components"),
+    ("открой библиотеку компонентов", "open_components"),
+    ("открой мои проекты", "open_projects"),
+    ("открой my-pro", "open_projects"),
     ("привет", "none"),
     ("как дела", "none"),
+    ("открой youtube", "none"),
     ("расскажи анекдот", "none"),
 ]
 

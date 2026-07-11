@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""Генератор датасета для LoRA-файнтюна классификатора инструментов.
+"""Генератор датасета для LoRA-файнтюна классификатора команд «открыть папку».
 
-Собирает пары «запрос → имя инструмента» комбинаторно из шаблонов (глагол ×
-объект × синонимы), плюс большой класс none (болтовня/оффтоп). Пишет в
-chat-формат JSONL (mlx-lm): system + user → assistant=имя.
+Читает живые формулировки из phrases.txt (человекочитаемый банк фраз) и к каждой
+добавляет вариации: опечатки, разный регистр, лишние слова, перестановку слов.
 
-При смене набора инструментов правится TOOLS_PHRASES ниже.
-Тестовые фразы из eval.py исключаются из train (честный held-out).
+Пишет:
+  data/train.jsonl, data/valid.jsonl — chat-формат для mlx-lm;
+  data/preview.md                    — весь датасет по-человечески, по классам.
+
+Класс none обязателен: учит модель отвечать «ничего не подходит» на болтовню и
+посторонние команды, а не открывать случайную папку.
+
+Held-out фразы из eval.py в train не попадают.
 """
 import json
 import os
@@ -15,126 +20,101 @@ import random
 random.seed(42)
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# Короткий системный промпт — БЕЗ few-shot (маппинг даёт обучение).
 SYSTEM = "Ты — классификатор. По запросу пользователя верни ровно одно имя инструмента из набора или none. Только имя, без пояснений."
 
-# Глаголы запуска раздела (для show_*)
-SHOW_VERBS = ["покажи", "открой", "запусти", "выведи", "дай", "глянь", "отобрази",
-              "покажите", "хочу увидеть", "нужны", "где", "давай", "выдай", "смотреть",
-              "открой-ка", "покаж", "запусти-ка", ""]
+FILLERS = ["пожалуйста", "плиз", "слушай", "давай", "ну", "мне", "можешь", "быстро",
+           "срочно", "эй", "короче", "так", "будь добр", "го", "щас", "надо", "пож"]
 
-# Объекты-синонимы по инструментам
-TOOLS_PHRASES = {
-    "show_components": ["компоненты", "компонент", "список компонентов", "все компоненты",
-                         "компоненты проекта", "components", "компоненты системы", "комоненты"],
-    "show_projects": ["проекты", "проект", "список проектов", "все проекты", "наши проекты",
-                       "projects", "проекты наши", "какие проекты", "проекты все"],
-    "show_rag": ["раг", "рак", "rag", "rag систему", "раг систему", "раг-систему",
-                  "систему rag", "рэг", "rag систему покажи"],
-    "show_adsw_projects": ["проекты адсв", "адсв проекты", "проекты adsw", "adsw проекты",
-                            "проекты в адсв", "адсв-проекты", "проекты по адсв", "adsw project",
-                            "проекты адсв все", "адсв проекты список"],
-    "show_network_projects": ["проекты нетворк", "нетворк проекты", "network проекты",
-                               "проекты network", "проекты в нетворк", "нетворк-проекты",
-                               "проекты по нетворк", "network project", "нетворк проекты список"],
-}
-
-# open_adsw — отдельно: обязательно про ПАПКУ/Finder (иначе это show_adsw_projects)
-OPEN_VERBS = ["открой", "открыть", "зайди в", "перейди в", "покажи в finder", "открой в finder",
-              "открой мне", "открой пожалуйста"]
-OPEN_OBJECTS = ["папку адсв", "папку adsw", "адсв в finder", "директорию адсв", "папку adsw в finder",
-                "adsw в файндере", "папку с адсв", "каталог адсв", "папку адсв в finder"]
-
-# Класс none — болтовня, вопросы о боте, оффтоп, другие темы
-NONE = [
-    # приветствия
-    "привет", "привет!", "приветствую", "здравствуй", "здравствуйте", "здарова", "здорово",
-    "доброе утро", "добрый день", "добрый вечер", "хай", "хеллоу", "йо", "приветик", "ку", "куку",
-    "салют", "дратути", "здаров", "хало",
-    # благодарности / вежливость
-    "спасибо", "спасибо большое", "благодарю", "спс", "пасиб", "спасибо тебе", "огромное спасибо",
-    "благодарствую", "мерси", "ты лучший", "молодец", "красава",
-    # смолток / вопросы о боте
-    "как дела", "как ты", "как жизнь", "что нового", "чем занят", "как настроение",
-    "как делишки", "как оно", "чё как", "как сам", "всё хорошо?", "ты тут?", "ты здесь?",
-    "кто ты", "что ты умеешь", "ты кто", "как тебя зовут", "ты бот?", "ты человек?",
-    "что ты можешь", "расскажи о себе", "чем можешь помочь",
-    # шутки / развлечение
-    "расскажи анекдот", "пошути", "расскажи что-нибудь", "развесели меня", "скажи шутку",
-    "рассмеши меня", "знаешь анекдоты", "расскажи историю", "спой песню",
-    # время / погода / бытовое
-    "который час", "какая погода", "сколько времени", "какой сегодня день", "какое число",
-    "погода на завтра", "когда выходные", "сколько сейчас времени",
-    # прощания
-    "пока", "до свидания", "увидимся", "бывай", "спокойной ночи", "до встречи", "прощай",
-    "всё, пока", "ладно, пойду",
-    # математика / общие вопросы
-    "2+2", "сколько будет 5 на 5", "посчитай 10 плюс 7", "реши уравнение", "сколько будет два плюс два",
-    "чему равен корень из 16", "переведи 100 долларов в рубли",
-    "напиши стих", "переведи на английский привет", "что такое python", "что такое mcp",
-    "объясни квантовую физику", "как работает интернет",
-    # другие приложения / посторонние команды
-    "закажи пиццу", "включи музыку", "поставь будильник", "напомни завтра позвонить",
-    "открой youtube", "запусти игру", "покажи погоду", "открой браузер", "открой почту",
-    "включи свет", "выключи компьютер", "сделай скриншот", "открой ютуб", "запусти фотошоп",
-    "открой настройки", "открой калькулятор", "открой карты",
-    # бытовые вопросы
-    "как приготовить борщ", "где купить хлеб", "посоветуй фильм", "какой курс доллара",
-    "что посмотреть вечером", "какая столица франции", "сколько лет земле",
-    # междометия / мусор / короткие
-    "ничего", "не знаю", "просто так", "тест", "проверка", "ааа", "хм", "ок", "окей", "угу",
-    "да", "нет", "ага", "неа", "잘", "asdf", ".", "?", "!!!", "ыыы", "лол", "ору",
-    # общие просьбы без привязки к инструментам
-    "помоги мне", "что делать", "объясни", "не понял", "повтори", "стоп", "хватит", "отмена",
-    "продолжай", "дальше", "погоди", "подожди", "не то", "исправь", "верни назад",
-]
+CYR = "абвгдеёжзийклмнопрстуфхцчшщъыьэюяabcdefghijklmnopqrstuvwxyz-"
 
 
-def gen():
-    rows = []  # (text, label)
+def load_phrases(path):
+    """Парсит phrases.txt → {label: [фразы]}. Секция начинается с '# <label> ...'."""
+    core, label = {}, None
+    for line in open(path, encoding="utf-8"):
+        s = line.rstrip("\n")
+        if s.strip().startswith("#"):
+            # заголовок секции: "# open_adsw  -> ..."
+            head = s.strip("# ").split("->")[0].strip()
+            token = head.split()[0] if head else ""
+            if token and (token == "none" or token.startswith("open_")):
+                label = token
+                core.setdefault(label, [])
+            continue
+        if not s.strip():
+            continue
+        if label:
+            core[label].append(s.strip())
+    return core
 
-    # show_* : глагол × объект
-    for tool, objs in TOOLS_PHRASES.items():
-        for obj in objs:
-            for v in SHOW_VERBS:
-                text = (v + " " + obj).strip() if v else obj
-                rows.append((text, tool))
 
-    # open_adsw : глагол × папка-объект
-    for v in OPEN_VERBS:
-        for obj in OPEN_OBJECTS:
-            rows.append(((v + " " + obj).strip(), "open_adsw"))
-    for obj in OPEN_OBJECTS:  # и голый объект
-        rows.append((obj, "open_adsw"))
+def typo(word):
+    if len(word) < 4:
+        return word
+    i = random.randint(1, len(word) - 2)
+    op = random.choice(["swap", "drop", "dup", "sub"])
+    if op == "swap":
+        return word[:i] + word[i + 1] + word[i] + word[i + 2:]
+    if op == "drop":
+        return word[:i] + word[i + 1:]
+    if op == "dup":
+        return word[:i] + word[i] + word[i:]
+    return word[:i] + random.choice(CYR) + word[i + 1:]
 
-    # none — с лёгким дублированием, чтобы класс был весомым
-    for t in NONE:
-        rows.append((t, "none"))
-        rows.append((t.capitalize(), "none"))
 
-    # дедуп по (text.lower)
+def recase(s):
+    r = random.random()
+    if r < 0.4:
+        return s
+    if r < 0.58:
+        return s.capitalize()
+    if r < 0.7:
+        return s.upper()
+    if r < 0.85:
+        return s.lower()
+    return " ".join(w.capitalize() if random.random() < 0.5 else w for w in s.split())
+
+
+def augment(phrase):
+    words = phrase.split()
+    if len(words) > 2 and random.random() < 0.3:
+        random.shuffle(words)
+    if random.random() < 0.5:
+        for _ in range(random.randint(1, 2)):
+            words.insert(random.randint(0, len(words)), random.choice(FILLERS))
+    if random.random() < 0.4 and words:
+        j = random.randrange(len(words))
+        words[j] = typo(words[j])
+    return recase(" ".join(words))
+
+
+def build(core):
+    rows = []
+    for label, phrases in core.items():
+        # none аугментируем слабее (фраз и так много, разнообразие естественное)
+        per = 4 if label == "none" else 22
+        for ph in phrases:
+            rows.append((ph, label))
+            for _ in range(per):
+                rows.append((augment(ph), label))
+    return rows
+
+
+def main():
+    core = load_phrases(os.path.join(HERE, "phrases.txt"))
+    rows = build(core)
+
+    # дедуп
     seen, uniq = set(), []
     for text, label in rows:
         k = text.lower().strip()
         if k and k not in seen:
             seen.add(k)
             uniq.append((text, label))
-    return uniq
-
-
-def to_msg(text, label):
-    return {"messages": [
-        {"role": "system", "content": SYSTEM},
-        {"role": "user", "content": text},
-        {"role": "assistant", "content": label},
-    ]}
-
-
-def main():
-    rows = gen()
+    rows = uniq
     random.shuffle(rows)
 
-    # held-out: точные тестовые фразы из eval убираем из train/valid
+    # held-out из eval убираем
     try:
         import eval as ev  # noqa
         holdout = {t.lower() for t, _ in ev.CASES}
@@ -143,22 +123,40 @@ def main():
     rows = [(t, l) for t, l in rows if t.lower() not in holdout]
 
     n = len(rows)
-    nval = max(20, n // 10)
+    nval = max(30, n // 10)
     valid, train = rows[:nval], rows[nval:]
 
     os.makedirs(os.path.join(HERE, "data"), exist_ok=True)
     for name, part in [("train", train), ("valid", valid)]:
-        path = os.path.join(HERE, "data", f"{name}.jsonl")
-        with open(path, "w") as f:
+        with open(os.path.join(HERE, "data", f"{name}.jsonl"), "w") as f:
             for text, label in part:
-                f.write(json.dumps(to_msg(text, label), ensure_ascii=False) + "\n")
+                f.write(json.dumps({"messages": [
+                    {"role": "system", "content": SYSTEM},
+                    {"role": "user", "content": text},
+                    {"role": "assistant", "content": label},
+                ]}, ensure_ascii=False) + "\n")
 
-    from collections import Counter
+    # человекочитаемый предпросмотр всего датасета
+    from collections import Counter, defaultdict
     dist = Counter(l for _, l in rows)
-    print(f"Всего примеров: {n}  (train {len(train)}, valid {len(valid)})")
-    print("Распределение по классам:")
+    by_label = defaultdict(list)
+    for t, l in rows:
+        by_label[l].append(t)
+    with open(os.path.join(HERE, "data", "preview.md"), "w", encoding="utf-8") as f:
+        f.write(f"# Датасет классификатора — {n} примеров\n\n")
+        f.write("Сгенерировано из `phrases.txt` с аугментацией (опечатки, регистр, "
+                "лишние слова, перестановка). Класс `none` = «ничего из набора».\n\n")
+        for label in sorted(by_label):
+            items = sorted(by_label[label], key=str.lower)
+            f.write(f"## {label} — {len(items)}\n\n")
+            for t in items:
+                f.write(f"- {t}\n")
+            f.write("\n")
+
+    print(f"Всего: {n}  (train {len(train)}, valid {len(valid)})")
     for k, v in sorted(dist.items()):
-        print(f"  {k:24s} {v}")
+        print(f"  {k:18s} {v}")
+    print("\nПредпросмотр для глаз: ft/data/preview.md")
 
 
 if __name__ == "__main__":

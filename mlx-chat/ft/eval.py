@@ -20,29 +20,43 @@ DEFAULT_MODEL = "/Users/alex/.cache/huggingface/hub/LiquidAI/LFM2.5-350M-MLX-8bi
 
 SYSTEM = "Ты — классификатор. По запросу пользователя верни ровно одно имя инструмента из набора или none. Только имя, без пояснений."
 
-TOOL_NAMES = ["show_components", "show_projects", "show_rag",
-              "show_adsw_projects", "show_network_projects", "open_adsw"]
+TOOL_NAMES = ["open_adsw", "open_network", "open_components", "open_projects"]
 ToolChoice = Literal[tuple(TOOL_NAMES + ["none"])]
 
-# Held-out тестовые фразы (в train не попадают — исключаются gen_dataset.py)
+# Held-out тестовые фразы (в train не попадают — исключаются gen_dataset.py).
+# Нарочно с опечатками, регистром, лишними словами и перестановкой.
 CASES = [
-    ("покажи компоненты", "show_components"),
-    ("что по компонентам", "show_components"),
-    ("открой проекты", "show_projects"),
-    ("покажи проекты", "show_projects"),
-    ("покажи проекты адсв", "show_adsw_projects"),
-    ("открой адсв проекты", "show_adsw_projects"),
-    ("проекты адсв", "show_adsw_projects"),
-    ("проекты нетворк", "show_network_projects"),
-    ("покажи нетворк проекты", "show_network_projects"),
-    ("запусти раг", "show_rag"),
-    ("покажи рак систему", "show_rag"),
-    ("открой папку адсв", "open_adsw"),
-    ("открой адсв в finder", "open_adsw"),
+    # open_adsw
+    ("открой адсв", "open_adsw"),
+    ("адсв папку открой пожалуйста", "open_adsw"),
+    ("ОТКРОЙ ПАПКУ ADSW", "open_adsw"),
+    ("слушай открой каталог adsw", "open_adsw"),
+    ("оскрой папку адсв", "open_adsw"),            # опечатка
+    # open_network
+    ("открой нетворк", "open_network"),
+    ("папку network открой давай", "open_network"),
+    ("открой Папку Нетворк", "open_network"),
+    ("зайди в нетворк срочно", "open_network"),
+    ("открой папку нетворкк", "open_network"),     # опечатка
+    # open_components
+    ("открой компоненты", "open_components"),
+    ("покажи библиотеку компонентов", "open_components"),
+    ("открой папку с компонентами плиз", "open_components"),
+    ("открой ui папку", "open_components"),
+    ("открой папку компанентов", "open_components"),  # опечатка
+    # open_projects
+    ("открой мои проекты", "open_projects"),
+    ("папку с проектами открой", "open_projects"),
+    ("открой my-pro", "open_projects"),
+    ("покажи папку проектов минина", "open_projects"),
+    ("открой праекты", "open_projects"),           # опечатка
+    # none
     ("привет", "none"),
-    ("спасибо", "none"),
     ("как дела", "none"),
+    ("открой youtube", "none"),
+    ("открой браузер", "none"),
     ("расскажи анекдот", "none"),
+    ("2+2", "none"),
 ]
 
 
