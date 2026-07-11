@@ -43,6 +43,28 @@ nohup python server.py > out/server.log 2>&1 &   # старт в фоне
 python say.py "Текст" --voice F1 --speed 1.2 --steps 6 --server
 ```
 
+### Убрать даже старт Python (~0.1с на вызов)
+
+`python say.py --server` каждый раз заново поднимает интерпретатор. Два способа
+этого избежать:
+
+**REPL — одна живая сессия, строки из stdin** (wall ≈ время генерации):
+```bash
+python say.py --repl --voice F1 --speed 1.2 --steps 6 --play
+# дальше просто вводишь фразы, Enter — озвучить; Ctrl-D — выход
+```
+
+**curl напрямую — вообще без Python** (фиксированный `out` → сразу afplay, без
+парсинга JSON):
+```bash
+say() {
+  curl -s "http://127.0.0.1:8126/gen" --data-urlencode "text=$*" \
+    -d voice=F1 -d speed=1.2 -d steps=6 -d lang=ru -d out=out/say.wav -G >/dev/null
+  afplay "$(dirname "$0")/out/say.wav" 2>/dev/null || afplay out/say.wav
+}
+# say "Обновление: сервер перезапущен"
+```
+
 ## Клонирование голоса
 **В open-source SDK НЕТ.** Доступны только 10 фиксированных пресетов. Метод
 `get_voice_style_from_path()` принимает не референс-wav, а готовый `.json` со
