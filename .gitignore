@@ -11,6 +11,9 @@ screen-edges/overlay
 screen-edges/out/
 screen-blocks/overlay
 screen-blocks/out/
+screen-grid/overlay
+screen-grid/button
+screen-grid/out/
 # Дообучение: тяжёлые веса (LoRA-адаптеры и сплавленная модель ~0.4ГБ)
 mlx-chat/ft/adapters/
 mlx-chat/ft/adapters_smoke/
