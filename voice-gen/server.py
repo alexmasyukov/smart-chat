@@ -70,7 +70,27 @@ def get_prompt(ref: str):
 
 # Прогреваем дефолтный референс сразу при старте
 get_prompt(REF_AUDIO)
-print("[server] референс закеширован — дальше без Whisper на каждый вызов", flush=True)
+MODEL.load_asr_model()  # для проверки коротких выходов (best-of-N)
+print("[server] референс закеширован, ASR готов", flush=True)
+
+
+def _words(s: str) -> list[str]:
+    import re
+    return re.findall(r"\w+", s.lower())
+
+
+def _quality_ok(asr: str, text: str) -> bool:
+    """Короткий выход считаем годным, если: первое слово текста стоит в начале
+    (не больше 1 лишнего слова перед ним) и последнее слово текста присутствует."""
+    aw, tw = _words(asr), _words(text)
+    if not aw or not tw:
+        return False
+    first, last = tw[0], tw[-1]
+    if first not in aw or last not in aw:
+        return False              # потеряли начало или конец
+    if aw.index(first) > 1:
+        return False              # мусор в начале (>1 лишнего слова)
+    return True
 
 
 # Фикс обрезки коротких текстов (см. research):
@@ -80,6 +100,16 @@ print("[server] референс закеширован — дальше без 
 SHORT_CHARS = 60          # порог «короткого» текста
 SHORT_SPEED = 0.85        # медленнее -> последнее слово выходит из зоны fade
 SHORT_GUIDANCE = 3.0      # сильнее держит текст на коротких
+SHORT_MAX_TRIES = 4       # best-of-N: перегенерация коротких при браке (утечка/дроп)
+
+
+def _generate_once(gen_text, prompt, num_step, speed, guidance):
+    cfg = dict(num_step=num_step, fade_duration=0.02)
+    if guidance is not None:
+        cfg["guidance_scale"] = guidance
+    gc = OmniVoiceGenerationConfig(**cfg)
+    return MODEL.generate(text=gen_text, voice_clone_prompt=prompt,
+                          speed=speed, generation_config=gc)[0]
 
 
 def synth(text: str, out: str, ref: str, num_step: int, speed: float) -> dict:
@@ -87,25 +117,32 @@ def synth(text: str, out: str, ref: str, num_step: int, speed: float) -> dict:
     # terminal-пунктуация: без неё модель чаще роняет последнее слово
     gen_text = text if text.rstrip()[-1:] in ".!?…" else text.rstrip() + "."
     is_short = len(text) < SHORT_CHARS
-
-    cfg = dict(num_step=num_step, fade_duration=0.02)
-    gen_speed = speed
-    if is_short:
-        cfg["guidance_scale"] = SHORT_GUIDANCE
-        gen_speed = min(speed, SHORT_SPEED)
-    gc = OmniVoiceGenerationConfig(**cfg)
-
-    t0 = time.time()
-    audio = MODEL.generate(text=gen_text, voice_clone_prompt=prompt,
-                           speed=gen_speed, generation_config=gc)
-    dt = time.time() - t0
-    wav = audio[0]
-    dur = len(wav) / 24000
     if not os.path.isabs(out):
         out = os.path.join(HERE, out)
-    sf.write(out, wav, 24000)
+
+    t0 = time.time()
+    tries = 0
+    if is_short:
+        # best-of-N с ASR-проверкой: короткие бывают с мусором в начале /
+        # потерей слова из-за случайного сида — перегенерируем до чистого.
+        gen_speed = min(speed, SHORT_SPEED)
+        wav = None
+        for tries in range(1, SHORT_MAX_TRIES + 1):
+            wav = _generate_once(gen_text, prompt, num_step, gen_speed, SHORT_GUIDANCE)
+            sf.write(out, wav, 24000)
+            asr = MODEL.transcribe(out)
+            if _quality_ok(asr, text):
+                break
+            print(f"[retry] брак ({tries}): «{asr}»", flush=True)
+    else:
+        wav = _generate_once(gen_text, prompt, num_step, speed, None)
+        sf.write(out, wav, 24000)
+        tries = 1
+
+    dt = time.time() - t0
+    dur = len(wav) / 24000
     return {"out": out, "gen_sec": round(dt, 2), "audio_sec": round(dur, 2),
-            "rtf": round(dt / dur, 3), "short": is_short}
+            "rtf": round(dt / dur, 3), "short": is_short, "tries": tries}
 
 
 class Handler(BaseHTTPRequestHandler):
