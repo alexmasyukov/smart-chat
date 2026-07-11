@@ -34,36 +34,24 @@ python say.py "Текст" --style-json voice.json   # свой голос из 
 Флаги: `--voice`, `--speed` (больше=быстрее), `--steps` (меньше=быстрее, дефолт 6),
 `--play` (afplay без окна), `--out`, `--lang`, `--style-json`, `--server`.
 
-### Сервер (для частых вызовов, порт 8126)
-Standalone-режим грузит модель ~0.2с на КАЖДЫЙ вызов. Сервер держит модель и все
-10 пресетов в памяти, поэтому вызов = чистая генерация без загрузки — полное
-время падает почти вдвое.
+### Сервер + curl (быстрый путь, порт 8126)
+
+`say.py` грузит модель ~0.2с на КАЖДЫЙ вызов + тратит ~0.1с на старт Python.
+Держи поднятым `server.py` (модель и 10 пресетов в памяти) и зови его через
+`say.sh` на curl — **без Python вообще, ~0.2с на фразу**.
+
 ```bash
-nohup python server.py > out/server.log 2>&1 &   # старт в фоне
-python say.py "Текст" --voice F1 --speed 1.2 --steps 6 --server
+nohup python server.py > out/server.log 2>&1 &   # старт сервера в фоне (разово)
+
+./say.sh "Обновление: 45 компонентов библиотеки, сервер перезапущен"
+VOICE=M1 SPEED=1.4 STEPS=4 ./say.sh "Другой голос, быстрее"
+NOPLAY=1 ./say.sh "Только сгенерировать"          # без afplay
 ```
 
-### Убрать даже старт Python (~0.1с на вызов)
-
-`python say.py --server` каждый раз заново поднимает интерпретатор. Два способа
-этого избежать:
-
-**REPL — одна живая сессия, строки из stdin** (wall ≈ время генерации):
-```bash
-python say.py --repl --voice F1 --speed 1.2 --steps 6 --play
-# дальше просто вводишь фразы, Enter — озвучить; Ctrl-D — выход
-```
-
-**curl напрямую — вообще без Python** (фиксированный `out` → сразу afplay, без
-парсинга JSON):
-```bash
-say() {
-  curl -s "http://127.0.0.1:8126/gen" --data-urlencode "text=$*" \
-    -d voice=F1 -d speed=1.2 -d steps=6 -d lang=ru -d out=out/say.wav -G >/dev/null
-  afplay "$(dirname "$0")/out/say.wav" 2>/dev/null || afplay out/say.wav
-}
-# say "Обновление: сервер перезапущен"
-```
+`say.sh` пишет в фиксированный `out/say.wav` (можно переопределить `OUT=...`),
+поэтому не нужно парсить JSON — сразу `afplay`. Параметры через env:
+`VOICE F1..M5`, `SPEED` (больше=быстрее), `STEPS` (меньше=быстрее), `PORT`,
+`OUT`, `NOPLAY=1`.
 
 ## Клонирование голоса
 **В open-source SDK НЕТ.** Доступны только 10 фиксированных пресетов. Метод
