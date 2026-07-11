@@ -1,5 +1,12 @@
 node_modules/
 .env
+.idea/
 *.log
 .DS_Store
 mascot/pet
+.venv/
+__pycache__/
+# Дообучение: тяжёлые веса (LoRA-адаптеры и сплавленная модель ~0.4ГБ)
+mlx-chat/ft/adapters/
+mlx-chat/ft/adapters_smoke/
+mlx-chat/ft/fused/
