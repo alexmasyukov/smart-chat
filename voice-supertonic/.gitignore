@@ -1,0 +1,8 @@
+.venv/
+out/*.wav
+__pycache__/
+*.pyc
+*.log
+# веса модели (ONNX, ~200 МБ) — качаются в HF-кэш при первом запуске
+models/
+*.onnx
