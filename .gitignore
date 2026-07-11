@@ -6,6 +6,9 @@ node_modules/
 mascot/pet
 .venv/
 __pycache__/
+# screen-edges: скомпилированный оверлей и рантайм-артефакты
+screen-edges/overlay
+screen-edges/out/
 # Дообучение: тяжёлые веса (LoRA-адаптеры и сплавленная модель ~0.4ГБ)
 mlx-chat/ft/adapters/
 mlx-chat/ft/adapters_smoke/
