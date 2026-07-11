@@ -22,6 +22,7 @@ import soundfile as sf
 import torch
 
 from omnivoice import OmniVoice
+from omnivoice.models.omnivoice import OmniVoiceGenerationConfig
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REF_AUDIO = os.path.join(HERE, "ref", "lily.wav")
@@ -72,19 +73,39 @@ get_prompt(REF_AUDIO)
 print("[server] референс закеширован — дальше без Whisper на каждый вызов", flush=True)
 
 
+# Фикс обрезки коротких текстов (см. research):
+#  - конец «съедается» постобработкой (fade_and_pad ~0.1с + remove_silence).
+#    Лечим: fade_duration=0.02, terminal-пунктуация, speed<1 для коротких.
+#  - на длинных текстах ничего не замедляем (speed как пришёл, guidance по умолч.)
+SHORT_CHARS = 60          # порог «короткого» текста
+SHORT_SPEED = 0.85        # медленнее -> последнее слово выходит из зоны fade
+SHORT_GUIDANCE = 3.0      # сильнее держит текст на коротких
+
+
 def synth(text: str, out: str, ref: str, num_step: int, speed: float) -> dict:
     prompt = get_prompt(ref)
+    # terminal-пунктуация: без неё модель чаще роняет последнее слово
+    gen_text = text if text.rstrip()[-1:] in ".!?…" else text.rstrip() + "."
+    is_short = len(text) < SHORT_CHARS
+
+    cfg = dict(num_step=num_step, fade_duration=0.02)
+    gen_speed = speed
+    if is_short:
+        cfg["guidance_scale"] = SHORT_GUIDANCE
+        gen_speed = min(speed, SHORT_SPEED)
+    gc = OmniVoiceGenerationConfig(**cfg)
+
     t0 = time.time()
-    audio = MODEL.generate(text=text, voice_clone_prompt=prompt,
-                           num_step=num_step, speed=speed)
+    audio = MODEL.generate(text=gen_text, voice_clone_prompt=prompt,
+                           speed=gen_speed, generation_config=gc)
     dt = time.time() - t0
     wav = audio[0]
     dur = len(wav) / 24000
     if not os.path.isabs(out):
         out = os.path.join(HERE, out)
     sf.write(out, wav, 24000)
-    return {"out": out, "gen_sec": round(dt, 2),
-            "audio_sec": round(dur, 2), "rtf": round(dt / dur, 3)}
+    return {"out": out, "gen_sec": round(dt, 2), "audio_sec": round(dur, 2),
+            "rtf": round(dt / dur, 3), "short": is_short}
 
 
 class Handler(BaseHTTPRequestHandler):

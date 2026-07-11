@@ -36,8 +36,21 @@ def main() -> None:
 
     print(json.dumps(res, ensure_ascii=False, indent=2))
     if not a.no_open and res.get("out"):
-        # afplay — системный плеер, без диалога Gatekeeper (в отличие от `open`)
-        subprocess.run(["afplay", res["out"]], check=False)
+        play_quicktime(res["out"])
+
+
+def play_quicktime(path: str) -> None:
+    # открыть в QuickTime и сразу запустить воспроизведение
+    script = (
+        'on run argv\n'
+        'tell application "QuickTime Player"\n'
+        'activate\n'
+        'set d to open (POSIX file (item 1 of argv))\n'
+        'play d\n'
+        'end tell\n'
+        'end run'
+    )
+    subprocess.run(["osascript", "-e", script, path], check=False)
 
 
 if __name__ == "__main__":
