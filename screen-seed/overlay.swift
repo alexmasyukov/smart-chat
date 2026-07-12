@@ -110,7 +110,7 @@ final class PointsView: NSView {
             rp.addRect(CGRect(x: x0, y: yBot, width: x1 - x0, height: yTop - yBot))
             rectLayer.path = rp
             let hex = ci < cubeFills.count ? cubeFills[ci] : "ff3399"
-            rectLayer.fillColor = colorFromHex(hex, alpha: 0.5).cgColor
+            rectLayer.fillColor = colorFromHex(hex, alpha: 0.2).cgColor
             rectLayer.strokeColor = NSColor.clear.cgColor
             cubeHost.addSublayer(rectLayer)
         }

@@ -15,8 +15,10 @@
     curl -s http://127.0.0.1:8133/scan
 """
 import collections
+import colorsys
 import json
 import os
+import random
 import subprocess
 import sys
 import threading
@@ -73,11 +75,13 @@ def color_hex(c):
     return f"{int(round(r)):02x}{int(round(g)):02x}{int(round(b)):02x}"
 
 
-def complement_hex(hexc):
-    """Противоположный цвет "rrggbb" -> "RRGGBB" (255 - каждый канал). Заливка
-    кубика этим цветом контрастна к самому блоку и разная для разных ключей."""
-    r, g, b = int(hexc[0:2], 16), int(hexc[2:4], 16), int(hexc[4:6], 16)
-    return f"{255 - r:02x}{255 - g:02x}{255 - b:02x}"
+def key_color(key):
+    """Случайный ЯРКИЙ цвет для ключа-цвета блока, "rrggbb". Сид — сам ключ,
+    поэтому цвет стабилен для одного ключа (и между сканами), но у разных
+    ключей — разные насыщенные оттенки. Прозрачность заливки задаёт оверлей."""
+    h = random.Random(key).random()
+    r, g, b = colorsys.hsv_to_rgb(h, 0.85, 1.0)
+    return f"{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
 
 
 PREDOM = int(os.environ.get("SG_PREDOM", "2"))               # порог преобладания: цвет >= стольких точек
@@ -144,7 +148,7 @@ def detect(img, step=STEP, predom=PREDOM, ndown=NDOWN):
                 continue
             blocks.setdefault(key, []).extend(points[j] for j in idx)
             cubes.append([round(xs[i] / W, 4), yt, round(xs[i + 1] / W, 4), yb])
-            cube_fills.append(complement_hex(key))     # заливка = противоположный цвет ключа
+            cube_fills.append(key_color(key))          # свой случайный цвет на каждый ключ
     return points, colors_hex, kinds, numbers, lines, cubes, blocks, cube_fills
 
 
