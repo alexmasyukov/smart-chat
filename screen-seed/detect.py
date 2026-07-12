@@ -2,8 +2,8 @@
 """Новый алгоритм — строится по шагам. РУЧНОЙ триггер: снимок и детект
 только по запросу GET /scan (кнопка), не по таймеру.
 
-ШАГ 1 (сейчас): ставим ОДНУ точку ровно в центре экрана. От неё дальше
-будет расти алгоритм.
+ШАГ 2 (сейчас): точка в центре + 3 над ней; справа (на STEP) точка + 3 над
+ней. Всего 8 точек, у каждой определяем цвет (по одному пикселю, без медианы).
 
 Старт (в фоне):
     python3 detect.py                 # слушает http://127.0.0.1:8133
@@ -29,7 +29,7 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 HOST = os.environ.get("SG_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SG_PORT", "8133"))
-PATCH = int(os.environ.get("SG_PATCH", "6"))                 # размер патча для цвета точки, px
+STEP = int(os.environ.get("SG_STEP", "40"))                  # шаг между соседними точками, px
 
 _CAP_PATH = os.path.join(OUT_DIR, "screenshot.png")
 _COND = threading.Condition()
@@ -51,13 +51,12 @@ def grab_screen():
     return img
 
 
-def color_at(img, x, y):
-    """Срединный (медианный) цвет патча PATCH×PATCH вокруг (x, y), BGR."""
+def color_px(img, x, y):
+    """Цвет ОДНОГО пикселя (x, y), BGR. Пока без медианы — просто пиксель."""
     H, W = img.shape[:2]
-    x0, y0 = max(0, int(x)), max(0, int(y))
-    x1, y1 = min(W, x0 + PATCH), min(H, y0 + PATCH)
-    roi = img[y0:y1, x0:x1].reshape(-1, 3)
-    return np.median(roi, axis=0)
+    xi = min(max(0, int(round(x))), W - 1)
+    yi = min(max(0, int(round(y))), H - 1)
+    return img[yi, xi]
 
 
 def color_hex(c):
@@ -69,14 +68,25 @@ def color_hex(c):
 def detect(img):
     """BGR-кадр -> (points, colors_hex, kinds, numbers, lines).
 
-    ШАГ 1: одна точка в центре экрана (0.5, 0.5)."""
+    ШАГ 2: точка в центре и ещё 3 над ней; справа (на STEP) ещё одна точка и
+    3 над ней. Всего 8 точек. Цвет каждой — по одному пикселю (без медианы).
+    «Сверху» = выше на экране (меньше y). Номера — в порядке построения:
+    0 центр, 1-3 над центром, 4 справа, 5-7 над правой."""
     H, W = img.shape[:2]
     cx, cy = W / 2.0, H / 2.0
-    color = color_at(img, cx, cy)
-    points = [[0.5, 0.5]]
-    colors_hex = [color_hex(color)]
-    kinds = ["seed"]
-    numbers = [0]
+
+    coords = [(cx, cy)]                       # 0: центр (seed)
+    for k in range(1, 4):                     # 1-3: три точки над центром
+        coords.append((cx, cy - k * STEP))
+    rx = cx + STEP
+    coords.append((rx, cy))                   # 4: точка справа
+    for k in range(1, 4):                     # 5-7: три точки над правой
+        coords.append((rx, cy - k * STEP))
+
+    points = [[round(x / W, 4), round(y / H, 4)] for (x, y) in coords]
+    colors_hex = [color_hex(color_px(img, x, y)) for (x, y) in coords]
+    kinds = ["seed"] + ["base"] * (len(coords) - 1)
+    numbers = list(range(len(coords)))
     lines = []
     return points, colors_hex, kinds, numbers, lines
 
