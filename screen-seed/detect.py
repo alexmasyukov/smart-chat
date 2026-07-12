@@ -2,8 +2,10 @@
 """Новый алгоритм — строится по шагам. РУЧНОЙ триггер: снимок и детект
 только по запросу GET /scan (кнопка), не по таймеру.
 
-ШАГ 2 (сейчас): точка в центре + 3 над ней; справа (на STEP) точка + 3 над
-ней. Всего 8 точек, у каждой определяем цвет (по одному пикселю, без медианы).
+ШАГ 4 (сейчас): от центра маршируем ВПРАВО до конца экрана столбцами по 4
+точки; между соседними столбцами — 3 кубика. У кубика с преобладающим цветом
+углы дописываются в объект blocks (под ключом-цветом), кубик заливается
+розовым. Цвет точки — по одному пикселю (без медианы).
 
 Старт (в фоне):
     python3 detect.py                 # слушает http://127.0.0.1:8133
@@ -79,44 +81,50 @@ def predominant(colors4):
 def detect(img, step=STEP):
     """BGR-кадр -> (points, colors_hex, kinds, numbers, lines, cubes, blocks).
 
-    ШАГ 3: точка в центре и ещё 3 над ней; справа (на step) точка и 3 над ней —
-    8 точек, левый столбец 0-3 и правый 4-7. Между ними 3 КУБИКА по высоте:
-    k=0 углы [0,1,5,4], k=1 [1,2,6,5], k=2 [2,3,7,6]. У каждого кубика ищем
-    ПРЕОБЛАДАЮЩИЙ цвет среди 4 углов; если он есть — заносим углы в объект
-    blocks под ключом-цветом и отдаём кубик на заливку (розовым).
+    ШАГ 4: от центра МАРШИРУЕМ ВПРАВО до конца экрана. Столбцы на x = cx, cx+step,
+    cx+2·step, ... до правого края; в каждом столбце 4 точки снизу вверх (cy,
+    cy-step, cy-2·step, cy-3·step). Между соседними столбцами — 3 КУБИКА по высоте.
+
+    Каждую итерацию (пара соседних столбцов) даёт 3 кубика. У каждого кубика ищем
+    ПРЕОБЛАДАЮЩИЙ цвет 4 углов; если он есть — ДОПИСЫВАЕМ его углы в объект blocks
+    под ключом-цветом (одинаковый цвет копится под одним ключом) и отдаём кубик на
+    заливку розовым. blocks собирается ЗАНОВО на каждый Scan.
     Цвет точки — по одному пикселю (без медианы). «Сверху» = меньше y."""
     H, W = img.shape[:2]
     cx, cy = W / 2.0, H / 2.0
 
-    coords = [(cx, cy)]                       # 0: центр (seed)
-    for k in range(1, 4):                     # 1-3: три точки над центром
-        coords.append((cx, cy - k * step))
-    rx = cx + step
-    coords.append((rx, cy))                   # 4: точка справа
-    for k in range(1, 4):                     # 5-7: три точки над правой
-        coords.append((rx, cy - k * step))
+    xs = []                                   # x столбцов: от центра вправо до края
+    x = cx
+    while x < W:
+        xs.append(x)
+        x += step
+    rows = [cy - j * step for j in range(4)]  # 4 точки столбца: j=0 низ, вверх
 
-    points = [[round(x / W, 4), round(y / H, 4)] for (x, y) in coords]
-    colors_hex = [color_hex(color_px(img, x, y)) for (x, y) in coords]
-    kinds = ["seed"] + ["base"] * (len(coords) - 1)
+    coords = [(xi, yj) for xi in xs for yj in rows]   # столбец за столбцом, снизу вверх
+    points = [[round(px / W, 4), round(py / H, 4)] for (px, py) in coords]
+    colors_hex = [color_hex(color_px(img, px, py)) for (px, py) in coords]
+    kinds = ["base"] * len(coords)
+    if kinds:
+        kinds[0] = "seed"                     # самая первая точка — центр
     numbers = list(range(len(coords)))
     lines = []
 
-    # 3 кубика между левым (0-3) и правым (4-7) столбцами. Углы кубика k:
-    # k (лв-низ), k+1 (лв-верх), 4+k (пр-низ), 5+k (пр-верх).
+    # Пара соседних столбцов i, i+1 -> 3 кубика. Углы кубика k (снизу вверх):
+    # (i,k) лв-низ, (i,k+1) лв-верх, (i+1,k) пр-низ, (i+1,k+1) пр-верх.
     blocks = {}
     cubes = []
-    x0 = round(cx / W, 4)
-    x1 = round(rx / W, 4)
-    for k in range(3):
-        idx = [k, k + 1, 4 + k, 5 + k]
-        key = predominant([colors_hex[j] for j in idx])
-        if key is None:
-            continue
-        blocks.setdefault(key, []).extend(points[j] for j in idx)
-        yt = round((cy - (k + 1) * step) / H, 4)   # верх кубика (меньше y)
-        yb = round((cy - k * step) / H, 4)         # низ кубика
-        cubes.append([x0, yt, x1, yb])
+    for i in range(len(xs) - 1):
+        xl = round(xs[i] / W, 4)
+        xr = round(xs[i + 1] / W, 4)
+        for k in range(3):
+            idx = [i * 4 + k, i * 4 + k + 1, (i + 1) * 4 + k, (i + 1) * 4 + k + 1]
+            key = predominant([colors_hex[j] for j in idx])
+            if key is None:
+                continue
+            blocks.setdefault(key, []).extend(points[j] for j in idx)
+            yt = round((cy - (k + 1) * step) / H, 4)   # верх кубика (меньше y)
+            yb = round((cy - k * step) / H, 4)         # низ кубика
+            cubes.append([xl, yt, xr, yb])
     return points, colors_hex, kinds, numbers, lines, cubes, blocks
 
 
