@@ -99,6 +99,17 @@ for p in synth_clips:
     for _ in range(5):
         neg_bufs.append(augment_positive(c))
 print("хард-негативов (чужой «кот слушай»):", len(synth_clips) * 5)
+
+# ТВОЙ голос/шум БЕЗ «кот слушай» -> САМЫЕ ВАЖНЫЕ негативы (учит фразу, а не голос).
+# Каждое окно дублируем ×3 для веса — это ключ против ложняков на свои звуки.
+user_neg_clips = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "out/user_neg/*.wav")))
+un = 0
+for p in user_neg_clips:
+    for w in neg_windows(read16(p)):
+        for _ in range(3):
+            neg_bufs.append(w)
+            un += 1
+print("твоих негативов-окон (×3 вес):", un, f"из {len(user_neg_clips)} записей")
 # богатый синтетический шум (против ложняков на любой шум/тон/стук)
 def synth_noise(k):
     outs = []
