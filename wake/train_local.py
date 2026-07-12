@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""
+Локальное обучение wake word «Кот, слушай» — фичи И обучение на маке (ARM CPU),
+чтобы train/inference совпадали (кросс-окруженческий рассинхрон фич устранён).
+
+Позитивы: наши 80 ElevenLabs-клипов, размноженные numpy-аугментацией (позиция в
+2-сек окне, шум, громкость). Негативы: наши длинные ru-фразы + хард-негативы,
+нарезанные скользящим окном 2 сек. Фичи — openwakeword.AudioFeatures (те же, что
+в детекторе). Модель — FCN, экспорт ONNX.
+"""
+import glob, os, collections
+import numpy as np
+import scipy.io.wavfile as wav
+import torch, torch.nn as nn
+import openwakeword.utils as U
+
+SR = 16000
+WIN = 2 * SR                 # 32000 сэмплов = окно (16,96)
+POS_AUG = 30                 # аугментаций на позитивный клип
+STRIDE = SR // 2             # шаг скользящего окна по негативам (0.5с)
+RNG = np.random.RandomState(0)
+
+F = U.AudioFeatures(device="cpu")
+n_frames, n_feat = F.get_embedding_shape(2.0)
+print("geometry:", (n_frames, n_feat))
+
+
+def read16(path):
+    sr, d = wav.read(path)
+    if d.ndim > 1:
+        d = d[:, 0]
+    return d.astype(np.int16)
+
+
+def augment_positive(clip):
+    """Клип -> 2-сек int16 окно: случайная позиция, шум, громкость."""
+    clip = clip[:WIN]
+    buf = np.zeros(WIN, dtype=np.float32)
+    off = RNG.randint(0, max(1, WIN - len(clip)))
+    buf[off:off + len(clip)] = clip.astype(np.float32)
+    # громкость
+    buf *= RNG.uniform(0.6, 1.1)
+    # шум со случайным SNR
+    if RNG.random() < 0.8:
+        rms = np.sqrt((buf ** 2).mean()) + 1e-6
+        snr = RNG.uniform(8, 30)
+        noise_rms = rms / (10 ** (snr / 20))
+        buf += RNG.randn(WIN).astype(np.float32) * noise_rms
+    return np.clip(buf, -32768, 32767).astype(np.int16)
+
+
+def neg_windows(clip):
+    """Длинный клип -> список 2-сек окон (скользящим окном)."""
+    outs = []
+    if len(clip) <= WIN:
+        b = np.zeros(WIN, dtype=np.int16)
+        off = RNG.randint(0, max(1, WIN - len(clip)))
+        b[off:off + len(clip)] = clip
+        outs.append(b)
+    else:
+        for s in range(0, len(clip) - WIN + 1, STRIDE):
+            outs.append(clip[s:s + WIN].astype(np.int16))
+    return outs
+
+
+def embed_all(buffers):
+    """Список 2-сек int16 -> (N,16,96) фичи, батчами."""
+    arr = np.stack(buffers).astype(np.int16)
+    feats = []
+    for i in range(0, len(arr), 256):
+        feats.append(F.embed_clips(arr[i:i + 256], batch_size=256))
+    return np.vstack(feats).astype(np.float32)
+
+
+# ---------- ПОЗИТИВЫ ----------
+pos_clips = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "out/positives/*.wav")))
+# held-out: последние 8 клипов не для обучения (честная проверка)
+train_pos_clips, holdout_pos_clips = pos_clips[:-8], pos_clips[-8:]
+pos_bufs = []
+for p in train_pos_clips:
+    c = read16(p)
+    for _ in range(POS_AUG):
+        pos_bufs.append(augment_positive(c))
+pos = embed_all(pos_bufs)
+print("positives:", pos.shape, "(из", len(train_pos_clips), "клипов)")
+
+# ---------- НЕГАТИВЫ ----------
+neg_clips = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "out/negatives/*.wav")))
+neg_bufs = []
+for p in neg_clips:
+    neg_bufs.extend(neg_windows(read16(p)))
+# немного чистого шума и тишины как негативы
+for _ in range(200):
+    neg_bufs.append((RNG.randn(WIN) * RNG.uniform(50, 800)).clip(-32768, 32767).astype(np.int16))
+neg = embed_all(neg_bufs)
+print("negatives:", neg.shape, "(из", len(neg_clips), "клипов + шум/тишина)")
+
+# ---------- ОБУЧЕНИЕ ----------
+X = np.vstack((neg, pos))
+y = np.array([0] * len(neg) + [1] * len(pos), dtype=np.float32)[..., None]
+Xt, yt = torch.from_numpy(X), torch.from_numpy(y)
+dl = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(Xt, yt), batch_size=512, shuffle=True)
+
+ld = 32
+fcn = nn.Sequential(
+    nn.Flatten(),
+    nn.Linear(n_frames * n_feat, ld), nn.LayerNorm(ld), nn.ReLU(),
+    nn.Linear(ld, ld), nn.LayerNorm(ld), nn.ReLU(),
+    nn.Linear(ld, 1), nn.Sigmoid(),
+)
+opt = torch.optim.Adam(fcn.parameters(), lr=1e-3)
+bce = torch.nn.functional.binary_cross_entropy
+wpos = len(neg) / len(pos)
+for ep in range(40):
+    for xb, yb in dl:
+        w = torch.ones(yb.shape[0]); w[yb.flatten() == 1] = wpos
+        opt.zero_grad(); loss = bce(fcn(xb), yb, w[..., None]); loss.backward(); opt.step()
+
+# ---------- ПРОВЕРКА на held-out (честная) ----------
+fcn.eval()
+s = torch.nn.Sigmoid()
+with torch.no_grad():
+    # held-out позитивы: центрированный клип в 2с окне
+    ho = []
+    for p in holdout_pos_clips:
+        c = read16(p); b = np.zeros(WIN, dtype=np.int16)
+        off = (WIN - min(len(c), WIN)) // 2; b[off:off + min(len(c), WIN)] = c[:WIN]
+        ho.append(b)
+    ho_f = embed_all(ho)
+    ho_sc = fcn(torch.from_numpy(ho_f)).numpy().flatten()
+    neg_sc = fcn(torch.from_numpy(neg)).numpy().flatten()
+print("\n=== held-out проверка ===")
+print("held-out ПОЗИТИВЫ (8 клипов, не в обучении):", [round(float(x), 3) for x in ho_sc])
+for th in [0.5, 0.7, 0.9]:
+    print(f"th={th}: held-out recall={(ho_sc>=th).mean()*100:5.1f}%  ложняки(neg)={(neg_sc>=th).mean()*100:.3f}%")
+
+# ---------- ЭКСПОРТ ----------
+out = os.path.join(os.path.dirname(__file__), "kot_slushai.onnx")
+torch.onnx.export(fcn, torch.zeros((1, n_frames, n_feat)), out, opset_version=13,
+                  dynamo=False, input_names=["features"], output_names=["score"],
+                  dynamic_axes={"features": {0: "batch"}, "score": {0: "batch"}})
+print("\nЭкспортировано:", out)
