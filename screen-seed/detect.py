@@ -68,17 +68,21 @@ def color_hex(c):
     return f"{int(round(r)):02x}{int(round(g)):02x}{int(round(b)):02x}"
 
 
-def predominant(colors4):
+PREDOM = int(os.environ.get("SG_PREDOM", "2"))               # порог преобладания: цвет >= стольких точек
+
+
+def predominant(colors4, min_count=PREDOM):
     """Преобладающий цвет среди углов кубика: строгий уникальный максимум,
-    встречается >= 2 раз. None, если явного преобладания нет (2-2 или все разные)."""
+    встречается >= min_count раз (ползунок «Точек на преобладание», 2..8).
+    None, если явного преобладания нет (недобрал порог, или ничья за максимум)."""
     cnt = collections.Counter(colors4)
     top, n = cnt.most_common(1)[0]
-    if n < 2 or list(cnt.values()).count(n) > 1:
+    if n < min_count or list(cnt.values()).count(n) > 1:
         return None
     return top
 
 
-def detect(img, step=STEP):
+def detect(img, step=STEP, predom=PREDOM):
     """BGR-кадр -> (points, colors_hex, kinds, numbers, lines, cubes, blocks).
 
     ШАГ 4: от центра МАРШИРУЕМ ВПРАВО до конца экрана. Столбцы на x = cx, cx+step,
@@ -118,7 +122,7 @@ def detect(img, step=STEP):
         xr = round(xs[i + 1] / W, 4)
         for k in range(3):
             idx = [i * 4 + k, i * 4 + k + 1, (i + 1) * 4 + k, (i + 1) * 4 + k + 1]
-            key = predominant([colors_hex[j] for j in idx])
+            key = predominant([colors_hex[j] for j in idx], predom)
             if key is None:
                 continue
             blocks.setdefault(key, []).extend(points[j] for j in idx)
@@ -128,13 +132,13 @@ def detect(img, step=STEP):
     return points, colors_hex, kinds, numbers, lines, cubes, blocks
 
 
-def do_scan(step=STEP):
+def do_scan(step=STEP, predom=PREDOM):
     """Один проход: снимок -> детект -> публикация в _LATEST."""
     t0 = time.time()
     img = grab_screen()
     if img is None:
         return None
-    points, colors_hex, kinds, numbers, lines, cubes, blocks = detect(img, step=step)
+    points, colors_hex, kinds, numbers, lines, cubes, blocks = detect(img, step=step, predom=predom)
     with _COND:
         _LATEST.update(ts=round(time.time(), 3), count=len(points),
                        v=_LATEST["v"] + 1, ms=round((time.time() - t0) * 1000, 1),
@@ -165,7 +169,9 @@ class Handler(BaseHTTPRequestHandler):
             qs = urllib.parse.parse_qs(parsed.query)
             step_raw = qs.get("step", [""])[0]
             step = int(step_raw) if step_raw.isdigit() else STEP
-            result = do_scan(step=step)
+            predom_raw = qs.get("predom", [""])[0]
+            predom = int(predom_raw) if predom_raw.isdigit() else PREDOM
+            result = do_scan(step=step, predom=predom)
             if result is None:
                 return self._send(500, {"error": "screencapture failed"})
             return self._send(200, {"ok": True, "count": result["count"], "v": result["v"],

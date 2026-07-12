@@ -98,8 +98,8 @@ final class LogDataSource: NSObject, NSTableViewDataSource, NSTableViewDelegate 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     var scanBaseURL: URL!
-    var bisectSlider: NSSlider!
-    var bisectLabel: NSTextField!
+    var predomSlider: NSSlider!
+    var predomLabel: NSTextField!
     var stepSlider: NSSlider!
     var stepLabel: NSTextField!
     var logTable: NSTableView!
@@ -121,20 +121,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.center()
 
-        bisectLabel = NSTextField(labelWithString: "Уточнений границы: 3")
-        bisectLabel.frame = NSRect(x: 16, y: 260, width: 290, height: 20)
-        bisectLabel.alignment = .center
-        window.contentView?.addSubview(bisectLabel)
+        predomLabel = NSTextField(labelWithString: "Точек на преобладание: 2")
+        predomLabel.frame = NSRect(x: 16, y: 260, width: 290, height: 20)
+        predomLabel.alignment = .center
+        window.contentView?.addSubview(predomLabel)
 
-        bisectSlider = NSSlider(frame: NSRect(x: 16, y: 230, width: 290, height: 24))
-        bisectSlider.minValue = 1
-        bisectSlider.maxValue = 10
-        bisectSlider.integerValue = 3
-        bisectSlider.numberOfTickMarks = 10
-        bisectSlider.allowsTickMarkValuesOnly = true
-        bisectSlider.target = self
-        bisectSlider.action = #selector(bisectMoved)
-        window.contentView?.addSubview(bisectSlider)
+        predomSlider = NSSlider(frame: NSRect(x: 16, y: 230, width: 290, height: 24))
+        predomSlider.minValue = 2
+        predomSlider.maxValue = 8
+        predomSlider.integerValue = 2
+        predomSlider.numberOfTickMarks = 7          // 2,3,...,8
+        predomSlider.allowsTickMarkValuesOnly = true
+        predomSlider.target = self
+        predomSlider.action = #selector(predomMoved)
+        window.contentView?.addSubview(predomSlider)
 
         stepLabel = NSTextField(labelWithString: "Шаг сетки: 150px")
         stepLabel.frame = NSRect(x: 16, y: 190, width: 290, height: 20)
@@ -214,8 +214,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         logTable.reloadData()
     }
 
-    @objc private func bisectMoved() {
-        bisectLabel.stringValue = "Уточнений границы: \(bisectSlider.integerValue)"
+    @objc private func predomMoved() {
+        predomLabel.stringValue = "Точек на преобладание: \(predomSlider.integerValue)"
     }
 
     @objc private func stepMoved() {
@@ -228,7 +228,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func tapped() {
         var comps = URLComponents(url: scanBaseURL, resolvingAgainstBaseURL: false)!
         comps.queryItems = [
-            URLQueryItem(name: "bisect", value: "\(bisectSlider.integerValue)"),
+            URLQueryItem(name: "predom", value: "\(predomSlider.integerValue)"),
             URLQueryItem(name: "step", value: "\(stepSlider.integerValue)"),
         ]
         guard let url = comps.url else { return }
