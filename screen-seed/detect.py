@@ -2,9 +2,9 @@
 """Новый алгоритм — строится по шагам. РУЧНОЙ триггер: снимок и детект
 только по запросу GET /scan (кнопка), не по таймеру.
 
-ШАГ 4 (сейчас): от центра маршируем ВПРАВО до конца экрана столбцами по 4
-точки; между соседними столбцами — 3 кубика. У кубика с преобладающим цветом
-углы дописываются в объект blocks (под ключом-цветом), кубик заливается
+ШАГ 5 (сейчас): старт из ЛЕВОГО ВЕРХНЕГО угла, маршируем ВПРАВО столбцами по
+4 точки ВНИЗ; между соседними столбцами — 3 кубика. У кубика с преобладающим
+цветом углы дописываются в объект blocks (под ключом-цветом), кубик заливается
 розовым. Цвет точки — по одному пикселю (без медианы).
 
 Старт (в фоне):
@@ -85,9 +85,9 @@ def predominant(colors4, min_count=PREDOM):
 def detect(img, step=STEP, predom=PREDOM):
     """BGR-кадр -> (points, colors_hex, kinds, numbers, lines, cubes, blocks).
 
-    ШАГ 4: от центра МАРШИРУЕМ ВПРАВО до конца экрана. Столбцы на x = cx, cx+step,
-    cx+2·step, ... до правого края; в каждом столбце 4 точки снизу вверх (cy,
-    cy-step, cy-2·step, cy-3·step). Между соседними столбцами — 3 КУБИКА по высоте.
+    ШАГ 5: старт — ЛЕВЫЙ ВЕРХНИЙ угол, МАРШИРУЕМ ВПРАВО до края. Столбцы на
+    x = 0, step, 2·step, ...; в каждом столбце 4 точки ВНИЗ (0, step, 2·step,
+    3·step от верха). Между соседними столбцами — 3 КУБИКА по высоте (вниз).
 
     Каждую итерацию (пара соседних столбцов) даёт 3 кубика. У каждого кубика ищем
     ПРЕОБЛАДАЮЩИЙ цвет 4 углов; если он есть — ДОПИСЫВАЕМ его углы в объект blocks
@@ -95,21 +95,21 @@ def detect(img, step=STEP, predom=PREDOM):
     заливку розовым. blocks собирается ЗАНОВО на каждый Scan.
     Цвет точки — по одному пикселю (без медианы). «Сверху» = меньше y."""
     H, W = img.shape[:2]
-    cx, cy = W / 2.0, H / 2.0
+    sx, sy = 0.0, 0.0                         # старт — ЛЕВЫЙ ВЕРХНИЙ угол
 
-    xs = []                                   # x столбцов: от центра вправо до края
-    x = cx
+    xs = []                                   # x столбцов: от левого края вправо
+    x = sx
     while x < W:
         xs.append(x)
         x += step
-    rows = [cy - j * step for j in range(4)]  # 4 точки столбца: j=0 низ, вверх
+    rows = [sy + j * step for j in range(4)]  # 4 точки столбца: j=0 верх, ВНИЗ
 
     coords = [(xi, yj) for xi in xs for yj in rows]   # столбец за столбцом, снизу вверх
     points = [[round(px / W, 4), round(py / H, 4)] for (px, py) in coords]
     colors_hex = [color_hex(color_px(img, px, py)) for (px, py) in coords]
     kinds = ["base"] * len(coords)
     if kinds:
-        kinds[0] = "seed"                     # самая первая точка — центр
+        kinds[0] = "seed"                     # самая первая точка — левый верхний угол
     numbers = list(range(len(coords)))
     lines = []
 
@@ -126,8 +126,8 @@ def detect(img, step=STEP, predom=PREDOM):
             if key is None:
                 continue
             blocks.setdefault(key, []).extend(points[j] for j in idx)
-            yt = round((cy - (k + 1) * step) / H, 4)   # верх кубика (меньше y)
-            yb = round((cy - k * step) / H, 4)         # низ кубика
+            yt = round((sy + k * step) / H, 4)         # верх кубика (меньше y)
+            yb = round((sy + (k + 1) * step) / H, 4)   # низ кубика (больше y)
             cubes.append([xl, yt, xr, yb])
     return points, colors_hex, kinds, numbers, lines, cubes, blocks
 
