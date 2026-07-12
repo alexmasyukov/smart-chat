@@ -9,7 +9,7 @@ import Foundation
 final class PointsClient {
     private let base: String
     private var lastV = 0
-    var onData: (([[Double]], [String], [Int], [Double]) -> Void)?
+    var onData: (([[Double]], [String], [Int], [Double], [[Double]]) -> Void)?
 
     init() {
         base = ProcessInfo.processInfo.environment["POINTS_URL"]
@@ -35,9 +35,10 @@ final class PointsClient {
                 let kinds = (obj["kinds"] as? [String]) ?? Array(repeating: "base", count: pts.count)
                 let numbers = (obj["numbers"] as? [Int]) ?? Array(0..<pts.count)
                 let lines = (obj["lines"] as? [Double]) ?? []
-                FileHandle.standardError.write("[overlay] v=\(v) points=\(pts.count) lines=\(lines.count)\n"
+                let cubes = (obj["cubes"] as? [[Double]]) ?? []
+                FileHandle.standardError.write("[overlay] v=\(v) points=\(pts.count) cubes=\(cubes.count)\n"
                     .data(using: .utf8)!)
-                DispatchQueue.main.async { self.onData?(pts, kinds, numbers, lines) }
+                DispatchQueue.main.async { self.onData?(pts, kinds, numbers, lines, cubes) }
             } else {
                 delay = 0.5                            // сервер не поднят — притормозим
             }
@@ -47,6 +48,7 @@ final class PointsClient {
 }
 
 final class PointsView: NSView {
+    private let cubeFill = CAShapeLayer()      // заливка кубиков, полупрозрачный розовый
     private let dots = CAShapeLayer()          // base-точки, зелёные
     private let probeDots = CAShapeLayer()     // probe-точки бисекции границы, оранжевые
     private let vprobeDots = CAShapeLayer()    // vprobe-точки (столбик сверху/снизу), голубые
@@ -58,6 +60,8 @@ final class PointsView: NSView {
         let host = CALayer()
         layer = host
         wantsLayer = true
+        cubeFill.fillColor = NSColor(srgbRed: 1.0, green: 0.30, blue: 0.60, alpha: 0.20).cgColor
+        cubeFill.strokeColor = NSColor.clear.cgColor
         dots.fillColor = NSColor(srgbRed: 0.15, green: 1.0, blue: 0.20, alpha: 0.95).cgColor
         dots.strokeColor = NSColor.clear.cgColor
         probeDots.fillColor = NSColor(srgbRed: 1.0, green: 0.55, blue: 0.0, alpha: 0.95).cgColor
@@ -67,6 +71,7 @@ final class PointsView: NSView {
         lines.fillColor = NSColor.clear.cgColor
         lines.strokeColor = NSColor(srgbRed: 0.15, green: 1.0, blue: 0.20, alpha: 0.95).cgColor
         lines.lineWidth = 1
+        host.addSublayer(cubeFill)                 // заливка под точками
         host.addSublayer(lines)
         host.addSublayer(dots)
         host.addSublayer(probeDots)
@@ -76,10 +81,19 @@ final class PointsView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func update(_ points: [[Double]], _ kinds: [String], _ numbers: [Int], _ lineXs: [Double]) {
+    func update(_ points: [[Double]], _ kinds: [String], _ numbers: [Int],
+                _ lineXs: [Double], _ cubes: [[Double]]) {
         let w = bounds.width, h = bounds.height
         let r: CGFloat = 3
         let scale = self.window?.backingScaleFactor ?? 2.0
+        // Кубики: [x0, yt, x1, yb] в норм. коорд. детектора (y сверху вниз).
+        let cubePath = CGMutablePath()
+        for c in cubes where c.count >= 4 {
+            let x0 = CGFloat(c[0]) * w, x1 = CGFloat(c[2]) * w
+            let yTop = (1 - CGFloat(c[1])) * h        // верх кубика в слое (больше y)
+            let yBot = (1 - CGFloat(c[3])) * h        // низ кубика в слое (меньше y)
+            cubePath.addRect(CGRect(x: x0, y: yBot, width: x1 - x0, height: yTop - yBot))
+        }
         let dotsPath = CGMutablePath()
         let probePath = CGMutablePath()
         let vprobePath = CGMutablePath()
@@ -111,6 +125,8 @@ final class PointsView: NSView {
         }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        cubeFill.frame = bounds
+        cubeFill.path = cubePath
         dots.frame = bounds
         dots.path = dotsPath
         probeDots.frame = bounds
@@ -142,7 +158,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         view = PointsView(frame: NSRect(origin: .zero, size: screen.size))
         window.contentView = view
-        client.onData = { [weak self] pts, kinds, nums, lns in self?.view.update(pts, kinds, nums, lns) }
+        client.onData = { [weak self] pts, kinds, nums, lns, cubes in
+            self?.view.update(pts, kinds, nums, lns, cubes)
+        }
         client.start()
         window.orderFrontRegardless()
     }
