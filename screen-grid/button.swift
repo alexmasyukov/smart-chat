@@ -144,7 +144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         logTextView.isSelectable = true
         logTextView.autoresizingMask = [.width]
         logTextView.textContainer?.widthTracksTextView = true
-        logTextView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        logTextView.font = NSFont.monospacedSystemFont(ofSize: 15, weight: .regular)
 
         logScroll.documentView = logTextView
         window.contentView?.addSubview(logScroll)
@@ -155,16 +155,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refreshLog(numbers: [Int], colorsHex: [String]) {
         let text = NSMutableAttributedString()
-        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let font = NSFont.monospacedSystemFont(ofSize: 15, weight: .regular)
         for (num, hex) in zip(numbers, colorsHex) {
-            let dot = NSAttributedString(string: "● ", attributes: [
-                .foregroundColor: NSColor(hex: hex) ?? .gray, .font: font,
-            ])
-            let label = NSAttributedString(string: "\(num)-\(hex)\n", attributes: [
+            let label = NSAttributedString(string: "\(num) - \(hex) ", attributes: [
                 .foregroundColor: NSColor.labelColor, .font: font,
             ])
-            text.append(dot)
+            let dot = NSAttributedString(string: "●\n", attributes: [
+                .foregroundColor: NSColor(hex: hex) ?? .gray, .font: font,
+            ])
             text.append(label)
+            text.append(dot)
         }
         logTextView.textStorage?.setAttributedString(text)
     }
