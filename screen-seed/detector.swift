@@ -96,7 +96,9 @@ func grabScreen() -> Frame? {
 // ---- цвет ----
 func medianColor(_ f: Frame, _ x: Double, _ y: Double) -> (Int, Int, Int) {
     let hp = PATCH / 2
-    let xi = Int(x.rounded()), yi = Int(y.rounded())
+    // клампим точку в пределы кадра — иначе патч за экраном пуст и median падает
+    let xi = min(max(0, Int(x.rounded())), f.w - 1)
+    let yi = min(max(0, Int(y.rounded())), f.h - 1)
     let x0 = max(0, xi - hp), x1 = min(f.w - 1, xi + hp)
     let y0 = max(0, yi - hp), y1 = min(f.h - 1, yi + hp)
     var rs = [Int](), gs = [Int](), bs = [Int]()
@@ -111,6 +113,7 @@ func medianColor(_ f: Frame, _ x: Double, _ y: Double) -> (Int, Int, Int) {
         yy += 1
     }
     func med(_ a: [Int]) -> Int {
+        if a.isEmpty { return 0 }
         let s = a.sorted(); let n = s.count
         return n % 2 == 1 ? s[n / 2] : Int((Double(s[n / 2 - 1] + s[n / 2]) / 2.0).rounded())
     }
