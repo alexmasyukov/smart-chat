@@ -64,12 +64,19 @@ ADAPT_BLOCK = int(os.environ.get("SE_ADAPT_BLOCK", "15"))     # окно adaptiv
 MORPH_FRAC = float(os.environ.get("SE_MORPH_FRAC", "0.05"))   # длина морф-ядра = доля стороны
 Y_TOL_FRAC = float(os.environ.get("SE_Y_TOL_FRAC", "0.004"))  # слияние: разброс поперёк
 GAP_FRAC = float(os.environ.get("SE_GAP_FRAC", "0.005"))      # слияние: макс. разрыв вдоль
+# Режим детекции: "blocks" — границы больших однородных блоков (по умолчанию,
+# нужнее коту); "lines" — морфологические H/V линии интерфейса.
+MODE = os.environ.get("SE_MODE", "blocks")
+CELL = int(os.environ.get("SE_CELL", "8"))               # размер ячейки сетки (раб. px)
+FLAT_STD = float(os.environ.get("SE_FLAT_STD", "6"))     # макс. разброс цвета в ячейке = однородна
+COLOR_Q = int(os.environ.get("SE_COLOR_Q", "24"))        # квант цвета (объединять близкие цвета)
+MIN_BLOCK_FRAC = float(os.environ.get("SE_MIN_BLOCK_FRAC", "0.01"))  # мин. площадь блока (доля экрана)
 
 _CAP_PATH = os.path.join(tempfile.gettempdir(), "screen_edges_frame.png")
 
 # Последний результат — общий между потоком-съёмщиком и HTTP-обработчиком.
 _LOCK = threading.Lock()
-_LATEST = {"ts": 0.0, "w": 0, "h": 0, "count": 0, "ms": 0.0, "segments": []}
+_LATEST = {"ts": 0.0, "w": 0, "h": 0, "count": 0, "ms": 0.0, "segments": [], "blocks": []}
 
 
 def grab_screen():
@@ -197,8 +204,8 @@ def _mask_components(mask, horizontal):
     return out
 
 
-def detect(img):
-    """BGR-кадр -> список сегментов (только H/V) в НОРМАЛИЗОВАННЫХ коорд. (0..1).
+def detect_lines(img):
+    """Режим "lines": морфологические H/V линии интерфейса. -> (segs, [], W, H).
 
     Пайплайн (морфология — надёжна на интерфейсах):
     grayscale → adaptive threshold (обе полярности) → морф-открытие H/V ядром →
@@ -251,7 +258,79 @@ def detect(img):
 
     # длинные и контрастные — вперёд (полезнее для кота)
     segs.sort(key=lambda s: s["len"] * (1 + s["contrast"] / 255), reverse=True)
-    return segs, W, H
+    return segs, [], W, H
+
+
+def _iou(a, b):
+    """IoU двух прямоугольников (x, y, w, h) в рабочих пикселях."""
+    ax, ay, aw, ah = a[:4]
+    bx, by, bw, bh = b[:4]
+    ix = max(0, min(ax + aw, bx + bw) - max(ax, bx))
+    iy = max(0, min(ay + ah, by + bh) - max(ay, by))
+    inter = ix * iy
+    union = aw * ah + bw * bh - inter
+    return inter / union if union else 0.0
+
+
+def detect_blocks(img):
+    """Режим "blocks": границы БОЛЬШИХ однородных блоков. -> (segs, blocks, W, H).
+
+    Экран бьётся на ячейки CELL×CELL. Ячейка «однородна», если разброс цвета в ней
+    мал (не текст/картинка, а заливка). Соседние однородные ячейки одного (квант.)
+    цвета образуют блок; большие блоки → их рамка (bbox) = 4 грани H/V. Это те
+    самые «полки и стены» — панели, области, карточки интерфейса."""
+    H, W = img.shape[:2]
+    scale = WORK_WIDTH / W
+    work = cv2.resize(img, (int(W * scale), int(H * scale)),
+                      interpolation=cv2.INTER_AREA)
+    wh, ww = work.shape[:2]
+    gray = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
+    cw, ch = ww // CELL, wh // CELL
+
+    wf = work.astype(np.float32)
+    mean = cv2.resize(wf, (cw, ch), interpolation=cv2.INTER_AREA)          # цвет ячейки
+    var = cv2.resize(wf * wf, (cw, ch), interpolation=cv2.INTER_AREA) - mean * mean
+    std = np.sqrt(np.clip(var, 0, None)).mean(axis=2)                       # однородность
+    flat = std < FLAT_STD
+    q = (mean // COLOR_Q).astype(np.int32)                                  # квантованный цвет
+    keyimg = q[..., 0] * 10000 + q[..., 1] * 100 + q[..., 2]
+    min_cells = max(30, int(MIN_BLOCK_FRAC * cw * ch))
+
+    raw = []
+    for k in np.unique(keyimg[flat]):
+        m = ((keyimg == k) & flat).astype(np.uint8)
+        n, _, stats, _ = cv2.connectedComponentsWithStats(m, 4)
+        for i in range(1, n):
+            x, y, w, h, area = stats[i]
+            if area < min_cells or w < 4 or h < 4:
+                continue
+            raw.append((x * CELL, y * CELL, w * CELL, h * CELL, area / (w * h)))
+    raw.sort(key=lambda b: -b[2] * b[3])          # крупные первыми
+    boxes = []
+    for b in raw:                                 # выкидываем почти-дубли (та же рамка)
+        if all(_iou(b, kept) < 0.85 for kept in boxes):
+            boxes.append(b)
+
+    segs, blocks = [], []
+    for x, y, w, h, fill in boxes:
+        blocks.append({"x": round(x / ww, 4), "y": round(y / wh, 4),
+                       "w": round(w / ww, 4), "h": round(h / wh, 4),
+                       "fill": round(float(fill), 2)})
+        edges = [("H", x, y, x + w, y),          ("H", x, y + h, x + w, y + h),
+                 ("V", x, y, x, y + h),          ("V", x + w, y, x + w, y + h)]
+        for o, x1, y1, x2, y2 in edges:
+            con = _edge_contrast(gray, x1, y1, x2, y2, ww, wh)
+            if con < MIN_CONTRAST:               # грань у края экрана без контраста — мимо
+                continue
+            segs.append(_seg(x1, y1, x2, y2, o, con, ww, wh))
+
+    segs.sort(key=lambda s: s["len"] * (1 + s["contrast"] / 255), reverse=True)
+    return segs, blocks, W, H
+
+
+def detect(img):
+    """Диспетчер режимов -> (segs, blocks, W, H)."""
+    return detect_blocks(img) if MODE == "blocks" else detect_lines(img)
 
 
 def _seg(x1, y1, x2, y2, o, con, sw, sh):
@@ -273,14 +352,12 @@ def capture_loop():
         img = grab_screen()
         if img is not None:
             try:
-                segs, w, h = detect(img)
+                segs, blocks, w, h = detect(img)
                 with _LOCK:
                     _LATEST.update(ts=round(time.time(), 3), w=w, h=h,
                                    count=len(segs), ms=round((time.time() - t0) * 1000, 1),
-                                   segments=segs)
-                nh = sum(1 for s in segs if s["o"] == "H")
-                nv = sum(1 for s in segs if s["o"] == "V")
-                print(f"[det] {len(segs)} линий (H={nh} V={nv}) за "
+                                   segments=segs, blocks=blocks)
+                print(f"[det] {MODE}: {len(blocks)} блоков, {len(segs)} граней за "
                       f"{_LATEST['ms']:.0f}мс", flush=True)
             except Exception as e:  # noqa: BLE001
                 print(f"[err] detect: {e}", flush=True)
@@ -327,7 +404,7 @@ def snapshot():
     if img is None:
         print("не удалось снять экран", file=sys.stderr)
         sys.exit(1)
-    segs, W, H = detect(img)
+    segs, blocks, W, H = detect(img)
     scale = WORK_WIDTH / W
     canvas = cv2.resize(img, (int(W * scale), int(H * scale)),
                         interpolation=cv2.INTER_AREA)
@@ -339,9 +416,7 @@ def snapshot():
         cv2.line(canvas, p1, p2, col, 2)
     out = os.path.join(OUT_DIR, "preview.png")
     cv2.imwrite(out, canvas)
-    nh = sum(1 for s in segs if s["o"] == "H")
-    nv = sum(1 for s in segs if s["o"] == "V")
-    print(f"{len(segs)} линий (H={nh} V={nv}); сохранил {out}")
+    print(f"{MODE}: {len(blocks)} блоков, {len(segs)} граней; сохранил {out}")
 
 
 def main():
