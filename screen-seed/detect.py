@@ -2,10 +2,11 @@
 """Новый алгоритм — строится по шагам. РУЧНОЙ триггер: снимок и детект
 только по запросу GET /scan (кнопка), не по таймеру.
 
-ШАГ 5 (сейчас): старт из ЛЕВОГО ВЕРХНЕГО угла, маршируем ВПРАВО столбцами по
-4 точки ВНИЗ; между соседними столбцами — 3 кубика. У кубика с преобладающим
-цветом углы дописываются в объект blocks (под ключом-цветом), кубик заливается
-розовым. Цвет точки — по одному пикселю (без медианы).
+ШАГ 6 (сейчас): старт с отступа (20,20) от левого верхнего угла, маршируем
+ВПРАВО столбцами по ndown точек ВНИЗ (ползунок «Точек вниз»). Ориентир — каждый
+кубик отдельно: у кубика с преобладающим цветом углы дописываются в blocks под
+ключом-цветом, а сам кубик заливается ПРОТИВОПОЛОЖНЫМ цветом этого ключа (свой
+цвет на каждый ключ). Цвет точки — по одному пикселю (без медианы).
 
 Старт (в фоне):
     python3 detect.py                 # слушает http://127.0.0.1:8133
@@ -33,11 +34,15 @@ os.makedirs(OUT_DIR, exist_ok=True)
 HOST = os.environ.get("SG_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SG_PORT", "8133"))
 STEP = int(os.environ.get("SG_STEP", "40"))                  # шаг между соседними точками, px
+NDOWN = int(os.environ.get("SG_NDOWN", "4"))                 # точек вниз в столбце (ползунок)
+START_X = int(os.environ.get("SG_START_X", "20"))            # старт: отступ слева, px
+START_Y = int(os.environ.get("SG_START_Y", "20"))            # старт: отступ сверху, px
 
 _CAP_PATH = os.path.join(OUT_DIR, "screenshot.png")
 _COND = threading.Condition()
 _LATEST = {"ts": 0.0, "count": 0, "ms": 0.0, "points": [], "colors": [],
-           "kinds": [], "numbers": [], "lines": [], "cubes": [], "blocks": {}, "v": 0}
+           "kinds": [], "numbers": [], "lines": [], "cubes": [], "cube_fills": [],
+           "blocks": {}, "v": 0}
 
 
 def grab_screen():
@@ -68,6 +73,13 @@ def color_hex(c):
     return f"{int(round(r)):02x}{int(round(g)):02x}{int(round(b)):02x}"
 
 
+def complement_hex(hexc):
+    """Противоположный цвет "rrggbb" -> "RRGGBB" (255 - каждый канал). Заливка
+    кубика этим цветом контрастна к самому блоку и разная для разных ключей."""
+    r, g, b = int(hexc[0:2], 16), int(hexc[2:4], 16), int(hexc[4:6], 16)
+    return f"{255 - r:02x}{255 - g:02x}{255 - b:02x}"
+
+
 PREDOM = int(os.environ.get("SG_PREDOM", "2"))               # порог преобладания: цвет >= стольких точек
 
 
@@ -82,70 +94,76 @@ def predominant(colors4, min_count=PREDOM):
     return top
 
 
-def detect(img, step=STEP, predom=PREDOM):
-    """BGR-кадр -> (points, colors_hex, kinds, numbers, lines, cubes, blocks).
+def detect(img, step=STEP, predom=PREDOM, ndown=NDOWN):
+    """BGR-кадр -> (points, colors_hex, kinds, numbers, lines, cubes, blocks, cube_fills).
 
-    ШАГ 5: старт — ЛЕВЫЙ ВЕРХНИЙ угол, МАРШИРУЕМ ВПРАВО до края. Столбцы на
-    x = 0, step, 2·step, ...; в каждом столбце 4 точки ВНИЗ (0, step, 2·step,
-    3·step от верха). Между соседними столбцами — 3 КУБИКА по высоте (вниз).
+    ШАГ 6: старт с отступа (START_X, START_Y) от левого верхнего угла, МАРШИРУЕМ
+    ВПРАВО до края. Столбцы на x = START_X, +step, +2·step, ...; в каждом столбце
+    ndown точек ВНИЗ (ползунок «Точек вниз»). Между соседними столбцами — (ndown-1)
+    КУБИКОВ по высоте.
 
-    Каждую итерацию (пара соседних столбцов) даёт 3 кубика. У каждого кубика ищем
-    ПРЕОБЛАДАЮЩИЙ цвет 4 углов; если он есть — ДОПИСЫВАЕМ его углы в объект blocks
-    под ключом-цветом (одинаковый цвет копится под одним ключом) и отдаём кубик на
-    заливку розовым. blocks собирается ЗАНОВО на каждый Scan.
-    Цвет точки — по одному пикселю (без медианы). «Сверху» = меньше y."""
+    Ориентир — КАЖДЫЙ кубик отдельно (не ряд/блок). У кубика ищем ПРЕОБЛАДАЮЩИЙ
+    цвет 4 углов (порог predom); если он есть — дописываем 4 угла в blocks под
+    ключом-цветом и заливаем кубик ПРОТИВОПОЛОЖНЫМ цветом этого ключа (свой цвет
+    заливки на каждый ключ, чтобы визуально различать). blocks и заливки — заново
+    на каждый Scan. Цвет точки — по одному пикселю (без медианы)."""
     H, W = img.shape[:2]
-    sx, sy = 0.0, 0.0                         # старт — ЛЕВЫЙ ВЕРХНИЙ угол
+    sx, sy = float(START_X), float(START_Y)   # старт: отступ сверху и слева
 
-    xs = []                                   # x столбцов: от левого края вправо
+    xs = []                                   # x столбцов: от старта вправо
     x = sx
     while x < W:
         xs.append(x)
         x += step
-    rows = [sy + j * step for j in range(4)]  # 4 точки столбца: j=0 верх, ВНИЗ
+    rows = [sy + j * step for j in range(ndown)]   # ndown точек столбца: j=0 верх, ВНИЗ
 
-    coords = [(xi, yj) for xi in xs for yj in rows]   # столбец за столбцом, снизу вверх
+    coords = [(xi, yj) for xi in xs for yj in rows]   # столбец за столбцом, сверху вниз
     points = [[round(px / W, 4), round(py / H, 4)] for (px, py) in coords]
     colors_hex = [color_hex(color_px(img, px, py)) for (px, py) in coords]
     kinds = ["base"] * len(coords)
     if kinds:
-        kinds[0] = "seed"                     # самая первая точка — левый верхний угол
+        kinds[0] = "seed"                     # самая первая точка — старт
     numbers = list(range(len(coords)))
     lines = []
 
-    # Пара соседних столбцов i, i+1 -> 3 кубика. Углы кубика k (снизу вверх):
-    # (i,k) лв-низ, (i,k+1) лв-верх, (i+1,k) пр-низ, (i+1,k+1) пр-верх.
+    # Рисуем РЯДАМИ: для каждого ряда k (сверху вниз) идём по кубикам слева
+    # направо до конца экрана, потом переходим на следующий ряд. Рядов = ndown-1.
+    # Углы кубика (столбцы i, i+1; ряд k): (i,k) лв-верх, (i,k+1) лв-низ,
+    # (i+1,k) пр-верх, (i+1,k+1) пр-низ.
     blocks = {}
     cubes = []
-    for i in range(len(xs) - 1):
-        xl = round(xs[i] / W, 4)
-        xr = round(xs[i + 1] / W, 4)
-        for k in range(3):
-            idx = [i * 4 + k, i * 4 + k + 1, (i + 1) * 4 + k, (i + 1) * 4 + k + 1]
+    cube_fills = []
+    ncols = len(xs)
+    for k in range(ndown - 1):                         # ряд за рядом, сверху вниз
+        yt = round((sy + k * step) / H, 4)             # верх кубиков ряда (меньше y)
+        yb = round((sy + (k + 1) * step) / H, 4)       # низ кубиков ряда (больше y)
+        for i in range(ncols - 1):                     # слева направо до конца экрана
+            idx = [i * ndown + k, i * ndown + k + 1, (i + 1) * ndown + k, (i + 1) * ndown + k + 1]
             key = predominant([colors_hex[j] for j in idx], predom)
             if key is None:
                 continue
             blocks.setdefault(key, []).extend(points[j] for j in idx)
-            yt = round((sy + k * step) / H, 4)         # верх кубика (меньше y)
-            yb = round((sy + (k + 1) * step) / H, 4)   # низ кубика (больше y)
-            cubes.append([xl, yt, xr, yb])
-    return points, colors_hex, kinds, numbers, lines, cubes, blocks
+            cubes.append([round(xs[i] / W, 4), yt, round(xs[i + 1] / W, 4), yb])
+            cube_fills.append(complement_hex(key))     # заливка = противоположный цвет ключа
+    return points, colors_hex, kinds, numbers, lines, cubes, blocks, cube_fills
 
 
-def do_scan(step=STEP, predom=PREDOM):
+def do_scan(step=STEP, predom=PREDOM, ndown=NDOWN):
     """Один проход: снимок -> детект -> публикация в _LATEST."""
     t0 = time.time()
     img = grab_screen()
     if img is None:
         return None
-    points, colors_hex, kinds, numbers, lines, cubes, blocks = detect(img, step=step, predom=predom)
+    points, colors_hex, kinds, numbers, lines, cubes, blocks, cube_fills = detect(
+        img, step=step, predom=predom, ndown=ndown)
     with _COND:
         _LATEST.update(ts=round(time.time(), 3), count=len(points),
                        v=_LATEST["v"] + 1, ms=round((time.time() - t0) * 1000, 1),
                        points=points, colors=colors_hex, kinds=kinds,
-                       numbers=numbers, lines=lines, cubes=cubes, blocks=blocks)
+                       numbers=numbers, lines=lines, cubes=cubes,
+                       cube_fills=cube_fills, blocks=blocks)
         _COND.notify_all()
-    print(f"[scan] {len(points)} точек, {len(cubes)} кубиков, {len(blocks)} блоков "
+    print(f"[scan] {len(points)} точек, {len(cubes)} кубиков, {len(blocks)} цветов "
           f"за {_LATEST['ms']:.0f}мс", flush=True)
     return _LATEST
 
@@ -171,7 +189,9 @@ class Handler(BaseHTTPRequestHandler):
             step = int(step_raw) if step_raw.isdigit() else STEP
             predom_raw = qs.get("predom", [""])[0]
             predom = int(predom_raw) if predom_raw.isdigit() else PREDOM
-            result = do_scan(step=step, predom=predom)
+            ndown_raw = qs.get("ndown", [""])[0]
+            ndown = int(ndown_raw) if ndown_raw.isdigit() and int(ndown_raw) >= 2 else NDOWN
+            result = do_scan(step=step, predom=predom, ndown=ndown)
             if result is None:
                 return self._send(500, {"error": "screencapture failed"})
             return self._send(200, {"ok": True, "count": result["count"], "v": result["v"],

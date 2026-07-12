@@ -102,6 +102,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var predomLabel: NSTextField!
     var stepSlider: NSSlider!
     var stepLabel: NSTextField!
+    var pointsSlider: NSSlider!
+    var pointsLabel: NSTextField!
     var logTable: NSTableView!
     let logDataSource = LogDataSource()
 
@@ -110,7 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ?? "http://127.0.0.1:8132/scan"
         scanBaseURL = URL(string: scanURLStr)!
 
-        let size = NSSize(width: 660, height: 300)
+        let size = NSSize(width: 660, height: 340)
         window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                            styleMask: [.titled, .closable, .miniaturizable],
                            backing: .buffered, defer: false)
@@ -122,11 +124,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.center()
 
         predomLabel = NSTextField(labelWithString: "Точек на преобладание: 2")
-        predomLabel.frame = NSRect(x: 16, y: 260, width: 290, height: 20)
+        predomLabel.frame = NSRect(x: 16, y: 300, width: 290, height: 20)
         predomLabel.alignment = .center
         window.contentView?.addSubview(predomLabel)
 
-        predomSlider = NSSlider(frame: NSRect(x: 16, y: 230, width: 290, height: 24))
+        predomSlider = NSSlider(frame: NSRect(x: 16, y: 276, width: 290, height: 24))
         predomSlider.minValue = 2
         predomSlider.maxValue = 8
         predomSlider.integerValue = 2
@@ -137,11 +139,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.contentView?.addSubview(predomSlider)
 
         stepLabel = NSTextField(labelWithString: "Шаг сетки: 150px")
-        stepLabel.frame = NSRect(x: 16, y: 190, width: 290, height: 20)
+        stepLabel.frame = NSRect(x: 16, y: 252, width: 290, height: 20)
         stepLabel.alignment = .center
         window.contentView?.addSubview(stepLabel)
 
-        stepSlider = NSSlider(frame: NSRect(x: 16, y: 160, width: 290, height: 24))
+        stepSlider = NSSlider(frame: NSRect(x: 16, y: 228, width: 290, height: 24))
         stepSlider.minValue = 10
         stepSlider.maxValue = 300
         stepSlider.integerValue = 150                    // дефолт как раньше
@@ -150,6 +152,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stepSlider.target = self
         stepSlider.action = #selector(stepMoved)
         window.contentView?.addSubview(stepSlider)
+
+        pointsLabel = NSTextField(labelWithString: "Точек вниз: 4")
+        pointsLabel.frame = NSRect(x: 16, y: 204, width: 290, height: 20)
+        pointsLabel.alignment = .center
+        window.contentView?.addSubview(pointsLabel)
+
+        pointsSlider = NSSlider(frame: NSRect(x: 16, y: 180, width: 290, height: 24))
+        pointsSlider.minValue = 2
+        pointsSlider.maxValue = 20
+        pointsSlider.integerValue = 4
+        pointsSlider.numberOfTickMarks = 19              // 2,3,...,20
+        pointsSlider.allowsTickMarkValuesOnly = true
+        pointsSlider.target = self
+        pointsSlider.action = #selector(pointsMoved)
+        window.contentView?.addSubview(pointsSlider)
 
         // .rounded bezel игнорирует высоту фрейма (фикс. Aqua-высота) — поэтому
         // делаем плоскую кнопку своим layer'ом, она реально растягивается.
@@ -173,7 +190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Лог справа: таблица (тот же порядок, что в out/points_*.txt) —
         // колонки "№" (фикс. ширина, без "лесенки"), hex, кружок-превью.
         // Обновляется после каждого скана.
-        let logScroll = NSScrollView(frame: NSRect(x: 328, y: 16, width: 316, height: 268))
+        let logScroll = NSScrollView(frame: NSRect(x: 328, y: 16, width: 316, height: 308))
         logScroll.hasVerticalScroller = true
         logScroll.autohidesScrollers = false
         logScroll.borderType = .bezelBorder
@@ -225,11 +242,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stepLabel.stringValue = "Шаг сетки: \(rounded)px"
     }
 
+    @objc private func pointsMoved() {
+        pointsLabel.stringValue = "Точек вниз: \(pointsSlider.integerValue)"
+    }
+
     @objc private func tapped() {
         var comps = URLComponents(url: scanBaseURL, resolvingAgainstBaseURL: false)!
         comps.queryItems = [
             URLQueryItem(name: "predom", value: "\(predomSlider.integerValue)"),
             URLQueryItem(name: "step", value: "\(stepSlider.integerValue)"),
+            URLQueryItem(name: "ndown", value: "\(pointsSlider.integerValue)"),
         ]
         guard let url = comps.url else { return }
         URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
