@@ -173,16 +173,21 @@ func detectFrame(_ f: Frame, step: Int, predom: Int, ndown: Int, useMid: Bool) -
     if !kinds.isEmpty { kinds[0] = "seed" }
     numbers = Array(0..<points.count)
 
-    var blocks = [String: [[Double]]]()
-    var cubes = [[Double]](), cubeFills = [String]()
     let ncols = xs.count
+    let nrows = max(0, ndown - 1), ncubes = max(0, ncols - 1)
     var nextNum = points.count
-    for k in 0..<(ndown - 1) {                        // ряд за рядом
-        let yt = r4((sy + Double(k) * Double(step)) / H)
-        let yb = r4((sy + Double(k + 1) * Double(step)) / H)
+    var blocks = [String: [[Double]]]()
+    @inline(__always) func corners(_ k: Int, _ i: Int) -> [Int] {
+        [i * ndown + k, i * ndown + k + 1, (i + 1) * ndown + k, (i + 1) * ndown + k + 1]
+    }
+
+    // ЭТАП 1: цвет каждого кубика (k,i) -> в сетку grid (ключ = позиция квадрата,
+    // для быстрого поиска соседей на этапе 2). nil = не закрашен.
+    var grid = [[String?]](repeating: [String?](repeating: nil, count: ncubes), count: nrows)
+    for k in 0..<nrows {
         let cyk = sy + (Double(k) + 0.5) * Double(step)
-        for i in 0..<(ncols - 1) {                    // слева направо
-            let idx = [i * ndown + k, i * ndown + k + 1, (i + 1) * ndown + k, (i + 1) * ndown + k + 1]
+        for i in 0..<ncubes {
+            let idx = corners(k, i)
             var cornerCols = idx.map { colors[$0] }
             var blockPts = idx.map { points[$0] }
             var key = predominant(cornerCols, predom)
@@ -196,10 +201,37 @@ func detectFrame(_ f: Frame, step: Int, predom: Int, ndown: Int, useMid: Bool) -
                 cornerCols.append(mcol); blockPts.append(mpt)
                 key = predominant(cornerCols, predom)
             }
-            guard let kk = key else { continue }
-            blocks[kk, default: []].append(contentsOf: blockPts)
+            if let kk = key {
+                grid[k][i] = kk
+                blocks[kk, default: []].append(contentsOf: blockPts)
+            }
+        }
+    }
+
+    // ЭТАП 2: пустой кубик закрашиваем, если БЛИЖАЙШИЕ закрашенные соседи слева и
+    // справа в том же ряду — одного цвета (это тот же блок с провалом на тексте).
+    // Соседей ищем по grid этапа 1 (без цепной заливки) -> один проход.
+    var filled = grid
+    for k in 0..<nrows {
+        for i in 0..<ncubes where grid[k][i] == nil {
+            var l = i - 1; while l >= 0 && grid[k][l] == nil { l -= 1 }
+            var r = i + 1; while r < ncubes && grid[k][r] == nil { r += 1 }
+            if l >= 0, r < ncubes, let lc = grid[k][l], let rc = grid[k][r], lc == rc {
+                filled[k][i] = lc
+                blocks[lc, default: []].append(contentsOf: corners(k, i).map { points[$0] })
+            }
+        }
+    }
+
+    // отдаём все закрашенные кубики (этап 1 + этап 2)
+    var cubes = [[Double]](), cubeFills = [String]()
+    for k in 0..<nrows {
+        let yt = r4((sy + Double(k) * Double(step)) / H)
+        let yb = r4((sy + Double(k + 1) * Double(step)) / H)
+        for i in 0..<ncubes {
+            guard let c = filled[k][i] else { continue }
             cubes.append([r4(xs[i] / W), yt, r4(xs[i + 1] / W), yb])
-            cubeFills.append(keyColor(kk))
+            cubeFills.append(keyColor(c))
         }
     }
     return ["points": points, "colors": colors, "kinds": kinds, "numbers": numbers,
