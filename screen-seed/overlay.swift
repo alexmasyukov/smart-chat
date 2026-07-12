@@ -123,7 +123,8 @@ final class PointsView: NSView {
             let x = CGFloat(p[0]) * w
             let y = (1 - CGFloat(p[1])) * h          // y детектора сверху вниз -> слой снизу вверх
             let kind = i < kinds.count ? kinds[i] : "base"
-            let path = kind == "probe" ? probePath : (kind == "vprobe" ? vprobePath : dotsPath)
+            // mid — 5-я точка в центре кубика (оранжевая), base/seed — зелёные
+            let path = (kind == "probe" || kind == "mid") ? probePath : (kind == "vprobe" ? vprobePath : dotsPath)
             path.addEllipse(in: CGRect(x: x - r, y: y - r, width: 2 * r, height: 2 * r))
             let num = i < numbers.count ? numbers[i] : i
 

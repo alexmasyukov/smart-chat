@@ -143,15 +143,30 @@ def detect(img, step=STEP, predom=PREDOM, ndown=NDOWN):
     cubes = []
     cube_fills = []
     ncols = len(xs)
+    next_num = len(coords)
     for k in range(ndown - 1):                         # ряд за рядом, сверху вниз
         yt = round((sy + k * step) / H, 4)             # верх кубиков ряда (меньше y)
         yb = round((sy + (k + 1) * step) / H, 4)       # низ кубиков ряда (больше y)
+        cyk = sy + (k + 0.5) * step                    # y центра кубиков ряда, px
         for i in range(ncols - 1):                     # слева направо до конца экрана
             idx = [i * ndown + k, i * ndown + k + 1, (i + 1) * ndown + k, (i + 1) * ndown + k + 1]
-            key = predominant([colors_hex[j] for j in idx], predom)
+            corner_cols = [colors_hex[j] for j in idx]
+            block_pts = [points[j] for j in idx]
+            key = predominant(corner_cols, predom)
+            if key is None:
+                # у 4 углов преобладания нет — ставим 5-ю точку в ЦЕНТРЕ кубика,
+                # меряем её медианный цвет и пере-проверяем по 5 точкам. Часто
+                # 2 угла сели на текст, а центр попал на фон блока -> преобладание.
+                mcx = (xs[i] + xs[i + 1]) / 2.0
+                mcol = color_hex(color_med(img, mcx, cyk))
+                mpt = [round(mcx / W, 4), round(cyk / H, 4)]
+                points.append(mpt); colors_hex.append(mcol)
+                kinds.append("mid"); numbers.append(next_num); next_num += 1
+                key = predominant(corner_cols + [mcol], predom)
+                block_pts = block_pts + [mpt]
             if key is None:
                 continue
-            blocks.setdefault(key, []).extend(points[j] for j in idx)
+            blocks.setdefault(key, []).extend(block_pts)
             cubes.append([round(xs[i] / W, 4), yt, round(xs[i + 1] / W, 4), yb])
             cube_fills.append(key_color(key))          # свой случайный цвет на каждый ключ
     return points, colors_hex, kinds, numbers, lines, cubes, blocks, cube_fills
