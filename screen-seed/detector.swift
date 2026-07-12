@@ -17,6 +17,7 @@ let STEP_DEF = envInt("SG_STEP", 60)
 let NDOWN_DEF = envInt("SG_NDOWN", 18)
 let PREDOM_DEF = envInt("SG_PREDOM", 3)
 let PATCH = envInt("SG_PATCH", 6)
+let TOL_DEF = envInt("SG_TOL", 1)               // допуск похожести цвета (квант канала), 1 = точно
 let START_X = envInt("SG_START_X", 20)
 let START_Y = envInt("SG_START_Y", 20)
 
@@ -122,6 +123,14 @@ func medianColor(_ f: Frame, _ x: Double, _ y: Double) -> (Int, Int, Int) {
 
 func hexOf(_ r: Int, _ g: Int, _ b: Int) -> String { String(format: "%02x%02x%02x", r, g, b) }
 
+// Квантование канала бакетом tol: близкие оттенки схлопываются в один цвет.
+// tol=1 -> без изменений (точное совпадение). Больше -> сильнее «медианность».
+@inline(__always) func quant(_ c: Int, _ tol: Int) -> Int {
+    if tol <= 1 { return c }
+    let q = Int((Double(c) / Double(tol)).rounded()) * tol
+    return min(255, max(0, q))
+}
+
 // ---- преобладание ----
 func predominant(_ cols: [String], _ minCount: Int) -> String? {
     var cnt = [String: Int]()
@@ -157,7 +166,7 @@ func keyColor(_ key: String) -> String {
 @inline(__always) func r4(_ v: Double) -> Double { (v * 10000).rounded() / 10000 }
 
 // ---- детект (порт detect.py) ----
-func detectFrame(_ f: Frame, step: Int, predom: Int, ndown ndownIn: Int, useMid: Bool, full: Bool) -> [String: Any] {
+func detectFrame(_ f: Frame, step: Int, predom: Int, ndown ndownIn: Int, useMid: Bool, full: Bool, tol: Int) -> [String: Any] {
     let W = Double(f.w), H = Double(f.h)
     let sx = Double(START_X), sy = Double(START_Y)
     var xs = [Double](); var x = sx
@@ -175,7 +184,7 @@ func detectFrame(_ f: Frame, step: Int, predom: Int, ndown ndownIn: Int, useMid:
         for yj in rows {
             let (r, g, b) = medianColor(f, xi, yj)
             points.append([r4(xi / W), r4(yj / H)])
-            colors.append(hexOf(r, g, b))
+            colors.append(hexOf(quant(r, tol), quant(g, tol), quant(b, tol)))
         }
     }
     kinds = Array(repeating: "base", count: points.count)
@@ -203,7 +212,7 @@ func detectFrame(_ f: Frame, step: Int, predom: Int, ndown ndownIn: Int, useMid:
             if key == nil && useMid {                 // нет преобладания у 4 углов -> 5-я точка в центре (опц.)
                 let mcx = (xs[i] + xs[i + 1]) / 2.0
                 let (r, g, b) = medianColor(f, mcx, cyk)
-                let mcol = hexOf(r, g, b)
+                let mcol = hexOf(quant(r, tol), quant(g, tol), quant(b, tol))
                 let mpt = [r4(mcx / W), r4(cyk / H)]
                 points.append(mpt); colors.append(mcol)
                 kinds.append("mid"); numbers.append(nextNum); nextNum += 1
@@ -255,10 +264,10 @@ var latest: [String: Any] = ["points": [], "colors": [], "kinds": [], "numbers":
                              "count": 0, "v": 0, "ms": 0.0, "show_numbers": false]
 var ver = 0
 
-func doScan(step: Int, predom: Int, ndown: Int, useMid: Bool, full: Bool, showNumbers: Bool) -> [String: Any]? {
+func doScan(step: Int, predom: Int, ndown: Int, useMid: Bool, full: Bool, showNumbers: Bool, tol: Int) -> [String: Any]? {
     let t0 = Date()
     guard let f = grabScreen() else { return nil }
-    var res = detectFrame(f, step: step, predom: predom, ndown: ndown, useMid: useMid, full: full)
+    var res = detectFrame(f, step: step, predom: predom, ndown: ndown, useMid: useMid, full: full, tol: tol)
     let ms = Date().timeIntervalSince(t0) * 1000
     cond.lock()
     ver += 1
@@ -328,7 +337,8 @@ func handleConn(_ fd: Int32) {
         let useMid = (qs["mid"] ?? "0") == "1"        // 5-я точка опциональна (по умолчанию выкл)
         let full = (qs["full"] ?? "1") == "1"         // «до конца экрана» (по умолчанию вкл)
         let labels = (qs["labels"] ?? "0") == "1"     // показывать номера точек (по умолчанию выкл)
-        if let r = doScan(step: step, predom: predom, ndown: ndown, useMid: useMid, full: full, showNumbers: labels) {
+        let tol = max(1, Int(qs["tol"] ?? "") ?? TOL_DEF)   // допуск похожести цвета
+        if let r = doScan(step: step, predom: predom, ndown: ndown, useMid: useMid, full: full, showNumbers: labels, tol: tol) {
             sendJSON(fd, 200, ["ok": true, "count": r["count"]!, "v": r["v"]!,
                                "numbers": r["numbers"]!, "colors": r["colors"]!])
         } else {

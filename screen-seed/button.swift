@@ -104,6 +104,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var stepLabel: NSTextField!
     var pointsSlider: NSSlider!
     var pointsLabel: NSTextField!
+    var tolSlider: NSSlider!
+    var tolLabel: NSTextField!
     var fullCheck: NSButton!
     var midCheck: NSButton!
     var numbersCheck: NSButton!
@@ -115,7 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ?? "http://127.0.0.1:8132/scan"
         scanBaseURL = URL(string: scanURLStr)!
 
-        let size = NSSize(width: 660, height: 370)
+        let size = NSSize(width: 660, height: 418)
         window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                            styleMask: [.titled, .closable, .miniaturizable],
                            backing: .buffered, defer: false)
@@ -127,11 +129,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.center()
 
         predomLabel = NSTextField(labelWithString: "Точек на преобладание: 3")
-        predomLabel.frame = NSRect(x: 16, y: 330, width: 290, height: 20)
+        predomLabel.frame = NSRect(x: 16, y: 378, width: 290, height: 20)
         predomLabel.alignment = .center
         window.contentView?.addSubview(predomLabel)
 
-        predomSlider = NSSlider(frame: NSRect(x: 16, y: 306, width: 290, height: 24))
+        predomSlider = NSSlider(frame: NSRect(x: 16, y: 354, width: 290, height: 24))
         predomSlider.minValue = 2
         predomSlider.maxValue = 8
         predomSlider.integerValue = 3
@@ -142,11 +144,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.contentView?.addSubview(predomSlider)
 
         stepLabel = NSTextField(labelWithString: "Шаг сетки: 60px")
-        stepLabel.frame = NSRect(x: 16, y: 282, width: 290, height: 20)
+        stepLabel.frame = NSRect(x: 16, y: 330, width: 290, height: 20)
         stepLabel.alignment = .center
         window.contentView?.addSubview(stepLabel)
 
-        stepSlider = NSSlider(frame: NSRect(x: 16, y: 258, width: 290, height: 24))
+        stepSlider = NSSlider(frame: NSRect(x: 16, y: 306, width: 290, height: 24))
         stepSlider.minValue = 10
         stepSlider.maxValue = 300
         stepSlider.integerValue = 60
@@ -157,11 +159,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.contentView?.addSubview(stepSlider)
 
         pointsLabel = NSTextField(labelWithString: "Точек вниз: 18")
-        pointsLabel.frame = NSRect(x: 16, y: 234, width: 290, height: 20)
+        pointsLabel.frame = NSRect(x: 16, y: 282, width: 290, height: 20)
         pointsLabel.alignment = .center
         window.contentView?.addSubview(pointsLabel)
 
-        pointsSlider = NSSlider(frame: NSRect(x: 16, y: 210, width: 290, height: 24))
+        pointsSlider = NSSlider(frame: NSRect(x: 16, y: 258, width: 290, height: 24))
         pointsSlider.minValue = 2
         pointsSlider.maxValue = 20
         pointsSlider.integerValue = 18
@@ -170,6 +172,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pointsSlider.target = self
         pointsSlider.action = #selector(pointsMoved)
         window.contentView?.addSubview(pointsSlider)
+
+        tolLabel = NSTextField(labelWithString: "Медианность цвета: 1")
+        tolLabel.frame = NSRect(x: 16, y: 234, width: 290, height: 20)
+        tolLabel.alignment = .center
+        window.contentView?.addSubview(tolLabel)
+
+        tolSlider = NSSlider(frame: NSRect(x: 16, y: 210, width: 290, height: 24))
+        tolSlider.minValue = 1
+        tolSlider.maxValue = 32
+        tolSlider.integerValue = 1
+        tolSlider.numberOfTickMarks = 32
+        tolSlider.allowsTickMarkValuesOnly = true
+        tolSlider.target = self
+        tolSlider.action = #selector(tolMoved)
+        window.contentView?.addSubview(tolSlider)
 
         fullCheck = NSButton(checkboxWithTitle: "До конца экрана", target: self, action: #selector(fullToggled))
         fullCheck.frame = NSRect(x: 16, y: 184, width: 290, height: 24)
@@ -210,7 +227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Лог справа: таблица (тот же порядок, что в out/points_*.txt) —
         // колонки "№" (фикс. ширина, без "лесенки"), hex, кружок-превью.
         // Обновляется после каждого скана.
-        let logScroll = NSScrollView(frame: NSRect(x: 328, y: 16, width: 316, height: 338))
+        let logScroll = NSScrollView(frame: NSRect(x: 328, y: 16, width: 316, height: 386))
         logScroll.hasVerticalScroller = true
         logScroll.autohidesScrollers = false
         logScroll.borderType = .bezelBorder
@@ -266,6 +283,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pointsLabel.stringValue = "Точек вниз: \(pointsSlider.integerValue)"
     }
 
+    @objc private func tolMoved() {
+        tolLabel.stringValue = "Медианность цвета: \(tolSlider.integerValue)"
+    }
+
     @objc private func fullToggled() {
         // «До конца экрана» блокирует ручной ползунок «Точек вниз»
         let on = fullCheck.state == .on
@@ -282,6 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             URLQueryItem(name: "mid", value: midCheck.state == .on ? "1" : "0"),
             URLQueryItem(name: "full", value: fullCheck.state == .on ? "1" : "0"),
             URLQueryItem(name: "labels", value: numbersCheck.state == .on ? "1" : "0"),
+            URLQueryItem(name: "tol", value: "\(tolSlider.integerValue)"),
         ]
         guard let url = comps.url else { return }
         URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
