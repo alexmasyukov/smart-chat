@@ -5,8 +5,8 @@
 ШАГ 6 (сейчас): старт с отступа (20,20) от левого верхнего угла, маршируем
 ВПРАВО столбцами по ndown точек ВНИЗ (ползунок «Точек вниз»). Ориентир — каждый
 кубик отдельно: у кубика с преобладающим цветом углы дописываются в blocks под
-ключом-цветом, а сам кубик заливается ПРОТИВОПОЛОЖНЫМ цветом этого ключа (свой
-цвет на каждый ключ). Цвет точки — по одному пикселю (без медианы).
+ключом-цветом, а сам кубик заливается своим случайным ярким цветом (на ключ).
+Цвет точки — медиана патча PATCH×PATCH.
 
 Старт (в фоне):
     python3 detect.py                 # слушает http://127.0.0.1:8133
@@ -37,6 +37,7 @@ HOST = os.environ.get("SG_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SG_PORT", "8133"))
 STEP = int(os.environ.get("SG_STEP", "40"))                  # шаг между соседними точками, px
 NDOWN = int(os.environ.get("SG_NDOWN", "4"))                 # точек вниз в столбце (ползунок)
+PATCH = int(os.environ.get("SG_PATCH", "6"))                 # размер патча для медианного цвета точки, px
 START_X = int(os.environ.get("SG_START_X", "20"))            # старт: отступ слева, px
 START_Y = int(os.environ.get("SG_START_Y", "20"))            # старт: отступ сверху, px
 
@@ -61,12 +62,16 @@ def grab_screen():
     return img
 
 
-def color_px(img, x, y):
-    """Цвет ОДНОГО пикселя (x, y), BGR. Пока без медианы — просто пиксель."""
+def color_med(img, x, y):
+    """Срединный (медианный) цвет патча PATCH×PATCH вокруг (x, y), BGR по каналам.
+    Медиана устойчива к одиночным выбросам (тонкая линия, край буквы)."""
     H, W = img.shape[:2]
-    xi = min(max(0, int(round(x))), W - 1)
-    yi = min(max(0, int(round(y))), H - 1)
-    return img[yi, xi]
+    h = PATCH // 2
+    xi, yi = int(round(x)), int(round(y))
+    x0, x1 = max(0, xi - h), min(W, xi + h + 1)
+    y0, y1 = max(0, yi - h), min(H, yi + h + 1)
+    roi = img[y0:y1, x0:x1].reshape(-1, 3)
+    return np.median(roi, axis=0)
 
 
 def color_hex(c):
@@ -108,9 +113,9 @@ def detect(img, step=STEP, predom=PREDOM, ndown=NDOWN):
 
     Ориентир — КАЖДЫЙ кубик отдельно (не ряд/блок). У кубика ищем ПРЕОБЛАДАЮЩИЙ
     цвет 4 углов (порог predom); если он есть — дописываем 4 угла в blocks под
-    ключом-цветом и заливаем кубик ПРОТИВОПОЛОЖНЫМ цветом этого ключа (свой цвет
-    заливки на каждый ключ, чтобы визуально различать). blocks и заливки — заново
-    на каждый Scan. Цвет точки — по одному пикселю (без медианы)."""
+    ключом-цветом и заливаем кубик своим случайным ярким цветом (на ключ, чтобы
+    визуально различать). blocks и заливки — заново на каждый Scan.
+    Цвет точки — МЕДИАНА патча PATCH×PATCH (устойчиво к выбросам)."""
     H, W = img.shape[:2]
     sx, sy = float(START_X), float(START_Y)   # старт: отступ сверху и слева
 
@@ -123,7 +128,7 @@ def detect(img, step=STEP, predom=PREDOM, ndown=NDOWN):
 
     coords = [(xi, yj) for xi in xs for yj in rows]   # столбец за столбцом, сверху вниз
     points = [[round(px / W, 4), round(py / H, 4)] for (px, py) in coords]
-    colors_hex = [color_hex(color_px(img, px, py)) for (px, py) in coords]
+    colors_hex = [color_hex(color_med(img, px, py)) for (px, py) in coords]
     kinds = ["base"] * len(coords)
     if kinds:
         kinds[0] = "seed"                     # самая первая точка — старт
