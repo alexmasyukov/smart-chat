@@ -74,22 +74,56 @@ def embed_all(buffers):
 
 # ---------- ПОЗИТИВЫ ----------
 pos_clips = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "out/positives/*.wav")))
-# held-out: последние 8 клипов не для обучения (честная проверка)
+user_clips = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "out/user_pos/*.wav")))
+# held-out: последние 8 синтетических клипов не для обучения (честная проверка)
 train_pos_clips, holdout_pos_clips = pos_clips[:-8], pos_clips[-8:]
 pos_bufs = []
 for p in train_pos_clips:
     c = read16(p)
     for _ in range(POS_AUG):
         pos_bufs.append(augment_positive(c))
+# ТВОЙ голос — приоритетные позитивы, аугментаций больше (их мало, но они целевые)
+USER_AUG = 60
+for p in user_clips:
+    c = read16(p)
+    for _ in range(USER_AUG):
+        pos_bufs.append(augment_positive(c))
 pos = embed_all(pos_bufs)
-print("positives:", pos.shape, "(из", len(train_pos_clips), "клипов)")
+print("positives:", pos.shape, f"(синт: {len(train_pos_clips)} клипов, твоих: {len(user_clips)})")
 
 # ---------- НЕГАТИВЫ ----------
 neg_clips = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "out/negatives/*.wav")))
 neg_bufs = []
 for p in neg_clips:
     neg_bufs.extend(neg_windows(read16(p)))
-# немного чистого шума и тишины как негативы
+# богатый синтетический шум (против ложняков на любой шум/тон/стук)
+def synth_noise(k):
+    outs = []
+    t = np.arange(WIN) / SR
+    for _ in range(k):
+        typ = RNG.randint(6)
+        amp = RNG.uniform(300, 9000)
+        if typ == 0:                              # белый
+            x = RNG.randn(WIN)
+        elif typ == 1:                            # коричневый (интеграл белого)
+            x = np.cumsum(RNG.randn(WIN))
+        elif typ == 2:                            # розовый-ish (сглаженный белый)
+            x = np.convolve(RNG.randn(WIN), np.ones(24) / 24, "same")
+        elif typ == 3:                            # чистый тон
+            x = np.sin(2 * np.pi * RNG.uniform(80, 4000) * t)
+        elif typ == 4:                            # чирп (свип частоты)
+            f0, f1 = RNG.uniform(80, 900), RNG.uniform(1200, 6000)
+            x = np.sin(2 * np.pi * (f0 + (f1 - f0) * t / (WIN / SR)) * t)
+        else:                                     # клики/стуки
+            x = np.zeros(WIN)
+            idx = RNG.randint(0, WIN, RNG.randint(3, 50))
+            x[idx] = RNG.randn(len(idx))
+        x = x / (np.abs(x).max() + 1e-6) * amp
+        outs.append(np.clip(x, -32768, 32767).astype(np.int16))
+    return outs
+
+neg_bufs.extend(synth_noise(2500))
+# немного тихого шума/тишины
 for _ in range(200):
     neg_bufs.append((RNG.randn(WIN) * RNG.uniform(50, 800)).clip(-32768, 32767).astype(np.int16))
 
