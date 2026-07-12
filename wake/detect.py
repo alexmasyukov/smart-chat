@@ -14,7 +14,7 @@ from scipy.signal import resample_poly
 import openwakeword.utils as U
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TH = float(os.environ.get("THRESHOLD", "0.8"))
+TH = float(os.environ.get("THRESHOLD", "0.85"))
 GATE = float(os.environ.get("GATE", "1200"))   # пиковая амплитуда: тише — считаем тишиной
 SR = 16000
 WIN = 2 * SR          # окно 2 сек = (16,96)

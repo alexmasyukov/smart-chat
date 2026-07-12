@@ -73,29 +73,32 @@ def embed_all(buffers):
 
 
 # ---------- ПОЗИТИВЫ ----------
-pos_clips = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "out/positives/*.wav")))
+# SPEAKER-SPECIFIC: позитивы — ТОЛЬКО твой голос. Чужие «кот слушай» -> хард-негативы.
 user_clips = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "out/user_pos/*.wav")))
-# held-out: последние 8 синтетических клипов не для обучения (честная проверка)
-train_pos_clips, holdout_pos_clips = pos_clips[:-8], pos_clips[-8:]
+synth_clips = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "out/positives/*.wav")))
+assert user_clips, "нет записей твоего голоса в out/user_pos/ — запусти record_positives.py"
+# held-out: последние 6 твоих записей не для обучения (честная проверка)
+train_user, holdout_pos_clips = user_clips[:-6], user_clips[-6:]
+USER_AUG = 50
 pos_bufs = []
-for p in train_pos_clips:
-    c = read16(p)
-    for _ in range(POS_AUG):
-        pos_bufs.append(augment_positive(c))
-# ТВОЙ голос — приоритетные позитивы, аугментаций больше (их мало, но они целевые)
-USER_AUG = 60
-for p in user_clips:
+for p in train_user:
     c = read16(p)
     for _ in range(USER_AUG):
         pos_bufs.append(augment_positive(c))
 pos = embed_all(pos_bufs)
-print("positives:", pos.shape, f"(синт: {len(train_pos_clips)} клипов, твоих: {len(user_clips)})")
+print("positives (ТОЛЬКО твой голос):", pos.shape, f"из {len(train_user)} записей")
 
 # ---------- НЕГАТИВЫ ----------
 neg_clips = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "out/negatives/*.wav")))
 neg_bufs = []
 for p in neg_clips:
     neg_bufs.extend(neg_windows(read16(p)))
+# ЧУЖИЕ голоса, говорящие «кот слушай» -> ХАРД-негативы (нужен только твой голос)
+for p in synth_clips:
+    c = read16(p)
+    for _ in range(5):
+        neg_bufs.append(augment_positive(c))
+print("хард-негативов (чужой «кот слушай»):", len(synth_clips) * 5)
 # богатый синтетический шум (против ложняков на любой шум/тон/стук)
 def synth_noise(k):
     outs = []
