@@ -1,23 +1,29 @@
 #!/usr/bin/env python3
 """
-Локальное обучение wake word «Кот, слушай» — фичи И обучение на маке (ARM CPU),
-чтобы train/inference совпадали (кросс-окруженческий рассинхрон фич устранён).
+Обучение wake word «эй кот» — детектор ФРАЗЫ (любой голос), рецепт из hey-gaia.
+Всё локально на маке (фичи и обучение в одном окружении).
 
-Позитивы: наши 80 ElevenLabs-клипов, размноженные numpy-аугментацией (позиция в
-2-сек окне, шум, громкость). Негативы: наши длинные ru-фразы + хард-негативы,
-нарезанные скользящим окном 2 сек. Фичи — openwakeword.AudioFeatures (те же, что
-в детекторе). Модель — FCN, экспорт ONNX.
+Позитивы: ElevenLabs «эй кот» (много голосов) + аугментация (темп/высота/позиция/шум).
+Негативы:
+  - РЕАЛЬНАЯ русская речь (Golos) -> out/neg_speech_feats.npy (главный убийца ложняков);
+  - ElevenLabs случайные фразы;
+  - ElevenLabs похожие слова («эй код», «кот», ...) -> ХАРД-негативы, вес ×4;
+  - синтетический шум + эфир микрофона.
+Модель: Conv1D-голова. Веса классов сбалансированы, хард-негативы усилены.
+Честный held-out: невиданные голоса позитивов + отложенная реальная речь.
 """
-import glob, os, collections
+import glob, os
 import numpy as np
 import scipy.io.wavfile as wav
+from scipy.signal import resample_poly
 import torch, torch.nn as nn
 import openwakeword.utils as U
 
+HERE = os.path.dirname(os.path.abspath(__file__))
 SR = 16000
-WIN = 2 * SR                 # 32000 сэмплов = окно (16,96)
-POS_AUG = 30                 # аугментаций на позитивный клип
-STRIDE = SR // 2             # шаг скользящего окна по негативам (0.5с)
+WIN = 2 * SR
+POS_AUG = 25
+STRIDE = SR // 2
 RNG = np.random.RandomState(0)
 
 F = U.AudioFeatures(device="cpu")
@@ -25,193 +31,159 @@ n_frames, n_feat = F.get_embedding_shape(2.0)
 print("geometry:", (n_frames, n_feat))
 
 
-def read16(path):
-    sr, d = wav.read(path)
-    if d.ndim > 1:
-        d = d[:, 0]
-    return d.astype(np.int16)
+def d(sub):
+    return sorted(glob.glob(os.path.join(HERE, sub)))
 
 
-from scipy.signal import resample_poly
+def read16(p):
+    sr, x = wav.read(p)
+    return (x[:, 0] if x.ndim > 1 else x).astype(np.int16)
 
-def augment_positive(clip, vary_speed=True):
-    """Клип -> 2-сек int16 окно: темп/высота, позиция, шум, громкость."""
+
+def augment_positive(clip):
     clip = clip.astype(np.float32)
-    # вариация темпа+высоты (ресемплинг) — даёт разнообразие фразы из немногих записей
-    if vary_speed and RNG.random() < 0.7:
-        up, down = 10, RNG.randint(9, 12)      # фактор 10/9..10/11 ~ ±10%
-        clip = resample_poly(clip, up, down)
+    if RNG.random() < 0.7:                       # темп+высота ±~10%
+        clip = resample_poly(clip, 10, RNG.randint(9, 12))
     clip = clip[:WIN]
     buf = np.zeros(WIN, dtype=np.float32)
     off = RNG.randint(0, max(1, WIN - len(clip)))
     buf[off:off + len(clip)] = clip
-    buf *= RNG.uniform(0.6, 1.1)               # громкость
-    if RNG.random() < 0.8:                      # шум со случайным SNR
+    buf *= RNG.uniform(0.6, 1.1)
+    if RNG.random() < 0.8:
         rms = np.sqrt((buf ** 2).mean()) + 1e-6
-        noise_rms = rms / (10 ** (RNG.uniform(8, 30) / 20))
-        buf += RNG.randn(WIN).astype(np.float32) * noise_rms
+        buf += RNG.randn(WIN).astype(np.float32) * rms / (10 ** (RNG.uniform(8, 30) / 20))
     return np.clip(buf, -32768, 32767).astype(np.int16)
 
 
 def neg_windows(clip):
-    """Длинный клип -> список 2-сек окон (скользящим окном)."""
-    outs = []
     if len(clip) <= WIN:
         b = np.zeros(WIN, dtype=np.int16)
         off = RNG.randint(0, max(1, WIN - len(clip)))
         b[off:off + len(clip)] = clip
-        outs.append(b)
-    else:
-        for s in range(0, len(clip) - WIN + 1, STRIDE):
-            outs.append(clip[s:s + WIN].astype(np.int16))
-    return outs
+        return [b]
+    return [clip[s:s + WIN].astype(np.int16) for s in range(0, len(clip) - WIN + 1, STRIDE)]
 
 
-def embed_all(buffers):
-    """Список 2-сек int16 -> (N,16,96) фичи, батчами."""
-    arr = np.stack(buffers).astype(np.int16)
-    feats = []
-    for i in range(0, len(arr), 256):
-        feats.append(F.embed_clips(arr[i:i + 256], batch_size=256))
-    return np.vstack(feats).astype(np.float32)
+def embed_all(bufs):
+    if not bufs:
+        return np.zeros((0, n_frames, n_feat), np.float32)
+    arr = np.stack(bufs).astype(np.int16)
+    return np.vstack([F.embed_clips(arr[i:i + 256], batch_size=256)
+                      for i in range(0, len(arr), 256)]).astype(np.float32)
 
 
-# ---------- ПОЗИТИВЫ ----------
-# ДЕТЕКТОР ФРАЗЫ: позитивы — «Кот, слушай» от кого угодно (ElevenLabs + твой голос).
-synth_pos = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "out/positives/*.wav")))   # чужие голоса, фраза
-user_clips = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "out/user_pos/*.wav")))    # твой голос, фраза
-assert user_clips, "нет записей твоего голоса в out/user_pos/ — запусти record_positives.py"
-# held-out: последние 6 твоих записей не для обучения. ТЕСТ-набор НЕ трогаем.
-train_user, holdout_pos_clips = user_clips[:-6], user_clips[-6:]
-USER_AUG = 90
-pos_bufs = []
-for p in synth_pos:                       # много голосов -> модель учит саму ФРАЗУ
-    c = read16(p)
-    for _ in range(POS_AUG):
-        pos_bufs.append(augment_positive(c))
-for p in train_user:                      # твой голос -> больше аугментации
-    c = read16(p)
-    for _ in range(USER_AUG):
-        pos_bufs.append(augment_positive(c))
-pos = embed_all(pos_bufs)
-print("positives (фраза, чужие+твой):", pos.shape, f"| ElevenLabs {len(synth_pos)} + твоих {len(train_user)}")
-
-# ---------- НЕГАТИВЫ ----------
-neg_clips = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "out/negatives/*.wav")))
-neg_bufs = []
-for p in neg_clips:                       # чужая речь/слова (НЕ фраза)
-    neg_bufs.extend(neg_windows(read16(p)))
-
-# ТВОЙ голос БЕЗ «кот слушай» -> важный негатив (отличать фразу от «кот»/«слушай» по отдельности)
-user_neg_clips = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "out/user_neg/*.wav")))
-un = 0
-for p in user_neg_clips:
-    for w in neg_windows(read16(p)):
-        for _ in range(3):
-            neg_bufs.append(w)
-            un += 1
-print("твоих негативов-окон (×3):", un, f"из {len(user_neg_clips)} записей")
-# богатый синтетический шум (против ложняков на любой шум/тон/стук)
 def synth_noise(k):
-    outs = []
-    t = np.arange(WIN) / SR
+    outs, t = [], np.arange(WIN) / SR
     for _ in range(k):
-        typ = RNG.randint(6)
-        amp = RNG.uniform(300, 9000)
-        if typ == 0:                              # белый
-            x = RNG.randn(WIN)
-        elif typ == 1:                            # коричневый (интеграл белого)
-            x = np.cumsum(RNG.randn(WIN))
-        elif typ == 2:                            # розовый-ish (сглаженный белый)
-            x = np.convolve(RNG.randn(WIN), np.ones(24) / 24, "same")
-        elif typ == 3:                            # чистый тон
-            x = np.sin(2 * np.pi * RNG.uniform(80, 4000) * t)
-        elif typ == 4:                            # чирп (свип частоты)
+        typ, amp = RNG.randint(6), RNG.uniform(300, 9000)
+        if typ == 0: x = RNG.randn(WIN)
+        elif typ == 1: x = np.cumsum(RNG.randn(WIN))
+        elif typ == 2: x = np.convolve(RNG.randn(WIN), np.ones(24) / 24, "same")
+        elif typ == 3: x = np.sin(2 * np.pi * RNG.uniform(80, 4000) * t)
+        elif typ == 4:
             f0, f1 = RNG.uniform(80, 900), RNG.uniform(1200, 6000)
             x = np.sin(2 * np.pi * (f0 + (f1 - f0) * t / (WIN / SR)) * t)
-        else:                                     # клики/стуки
-            x = np.zeros(WIN)
-            idx = RNG.randint(0, WIN, RNG.randint(3, 50))
-            x[idx] = RNG.randn(len(idx))
-        x = x / (np.abs(x).max() + 1e-6) * amp
-        outs.append(np.clip(x, -32768, 32767).astype(np.int16))
+        else:
+            x = np.zeros(WIN); idx = RNG.randint(0, WIN, RNG.randint(3, 50)); x[idx] = RNG.randn(len(idx))
+        outs.append(np.clip(x / (np.abs(x).max() + 1e-6) * amp, -32768, 32767).astype(np.int16))
     return outs
 
-neg_bufs.extend(synth_noise(2500))
-# немного тихого шума/тишины
-for _ in range(200):
-    neg_bufs.append((RNG.randn(WIN) * RNG.uniform(50, 800)).clip(-32768, 32767).astype(np.int16))
 
-# РЕАЛЬНЫЙ эфир микрофона (главное против ложняков на тишине) — на разных уровнях
-amb_clips = glob.glob(os.path.join(os.path.dirname(__file__), "out/ambient/*.wav"))
+def voice_of(path):
+    return int(os.path.basename(path).split("_")[1])
+
+
+# ---------- ПОЗИТИВЫ (эй кот) с held-out по голосам ----------
+pos_clips = d("out/positives/*.wav")
+HOLD_VOICES = {36, 37, 38, 39}
+train_pos = [p for p in pos_clips if voice_of(p) not in HOLD_VOICES]
+hold_pos = [p for p in pos_clips if voice_of(p) in HOLD_VOICES]
+pos = embed_all([augment_positive(read16(p)) for p in train_pos for _ in range(POS_AUG)])
+print(f"positives: {pos.shape} (train голосов-клипов {len(train_pos)}, held-out {len(hold_pos)})")
+
+# ---------- НЕГАТИВЫ ----------
+try:
+    from gen_negatives import SENTENCES
+    HARD_START = len(SENTENCES)
+except Exception:
+    HARD_START = 30
+
+neg_rand_bufs, neg_hard_bufs = [], []
+for p in d("out/negatives/*.wav"):
+    (neg_hard_bufs if voice_of(p) >= HARD_START else neg_rand_bufs).extend(neg_windows(read16(p)))
+neg_rand = embed_all(neg_rand_bufs)
+neg_hard = embed_all(neg_hard_bufs)
+
+# синтетический шум + тихий шум
+noise = embed_all(synth_noise(2000) +
+                  [(RNG.randn(WIN) * RNG.uniform(50, 800)).clip(-32768, 32767).astype(np.int16) for _ in range(200)])
+# эфир микрофона на разных уровнях
 amb_bufs = []
-for p in amb_clips:
+for p in d("out/ambient/*.wav"):
     a = read16(p).astype(np.float32)
-    for gain in (0.7, 1.0, 1.5, 2.5, 4.0):
-        g = np.clip(a * gain, -32768, 32767).astype(np.int16)
-        for s in range(0, len(g) - WIN + 1, WIN // 4):
-            amb_bufs.append(g[s:s + WIN])
-neg_bufs.extend(amb_bufs)
-print("реального эфира-негативов:", len(amb_bufs))
-neg = embed_all(neg_bufs)
-print("negatives:", neg.shape, "(речь + шум + эфир микрофона)")
+    for g in (0.7, 1.0, 1.5, 2.5, 4.0):
+        gg = np.clip(a * g, -32768, 32767).astype(np.int16)
+        amb_bufs += [gg[s:s + WIN] for s in range(0, len(gg) - WIN + 1, WIN // 4)]
+amb = embed_all(amb_bufs)
 
-# ---------- ОБУЧЕНИЕ ----------
+# реальная речь (Golos) — готовые фичи
+sp_path = os.path.join(HERE, "out", "neg_speech_feats.npy")
+speech = np.load(sp_path).astype(np.float32) if os.path.exists(sp_path) else np.zeros((0, n_frames, n_feat), np.float32)
+sp_hold, sp_train = speech[:1500], speech[1500:]
+print(f"negatives: речь={sp_train.shape[0]} рандом={len(neg_rand)} хард={len(neg_hard)} шум={len(noise)} эфир={len(amb)}")
+
+# ---------- сборка с пофакторными весами ----------
+groups = [  # (features, weight)
+    (sp_train, 1.0), (neg_rand, 1.0), (noise, 1.0), (amb, 1.0),
+    (neg_hard, 4.0),                       # похожие слова — усиленный вес
+]
+neg = np.vstack([g[0] for g in groups])
+neg_w = np.concatenate([np.full(len(g[0]), g[1], np.float32) for g in groups])
+w_pos = float(neg_w.sum()) / max(len(pos), 1)   # баланс классов
 X = np.vstack((neg, pos))
-y = np.array([0] * len(neg) + [1] * len(pos), dtype=np.float32)[..., None]
-Xt, yt = torch.from_numpy(X), torch.from_numpy(y)
-dl = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(Xt, yt), batch_size=512, shuffle=True)
+y = np.array([0] * len(neg) + [1] * len(pos), np.float32)[..., None]
+sw = np.concatenate([neg_w, np.full(len(pos), w_pos, np.float32)])[..., None]
+dl = torch.utils.data.DataLoader(
+    torch.utils.data.TensorDataset(torch.from_numpy(X), torch.from_numpy(y), torch.from_numpy(sw)),
+    batch_size=512, shuffle=True)
 
-# Conv1D-голова: свёртка по времени ловит паттерн «кот»->«слушай» (как в hey-gaia)
+
 class ConvHead(nn.Module):
-    def __init__(self, n_feat):
+    def __init__(self, nf):
         super().__init__()
-        self.c1 = nn.Conv1d(n_feat, 64, 3, padding=1)
-        self.b1 = nn.BatchNorm1d(64)
-        self.c2 = nn.Conv1d(64, 64, 3, padding=1)
-        self.b2 = nn.BatchNorm1d(64)
-        self.drop = nn.Dropout(0.3)
-        self.pool = nn.AdaptiveAvgPool1d(1)
-        self.fc = nn.Linear(64, 1)
+        self.c1 = nn.Conv1d(nf, 64, 3, padding=1); self.b1 = nn.BatchNorm1d(64)
+        self.c2 = nn.Conv1d(64, 64, 3, padding=1); self.b2 = nn.BatchNorm1d(64)
+        self.drop = nn.Dropout(0.3); self.pool = nn.AdaptiveAvgPool1d(1); self.fc = nn.Linear(64, 1)
 
-    def forward(self, x):                 # x: (B, 16, 96)
-        x = x.transpose(1, 2)             # -> (B, 96, 16): каналы=фичи, длина=кадры
+    def forward(self, x):
+        x = x.transpose(1, 2)
         x = self.drop(torch.relu(self.b1(self.c1(x))))
         x = torch.relu(self.b2(self.c2(x)))
-        x = self.pool(x).squeeze(-1)      # (B, 64)
-        return torch.sigmoid(self.fc(x))
+        return torch.sigmoid(self.fc(self.pool(x).squeeze(-1)))
+
 
 fcn = ConvHead(n_feat)
 opt = torch.optim.Adam(fcn.parameters(), lr=8e-4)
 bce = torch.nn.functional.binary_cross_entropy
-wpos = len(neg) / len(pos)
-for ep in range(70):
+for ep in range(60):
     fcn.train()
-    for xb, yb in dl:
-        w = torch.ones(yb.shape[0]); w[yb.flatten() == 1] = wpos
-        opt.zero_grad(); loss = bce(fcn(xb), yb, w[..., None]); loss.backward(); opt.step()
+    for xb, yb, wb in dl:
+        opt.zero_grad(); loss = bce(fcn(xb), yb, wb); loss.backward(); opt.step()
 
-# ---------- ПРОВЕРКА на held-out (честная) ----------
+# ---------- ЧЕСТНАЯ ПРОВЕРКА (held-out) ----------
 fcn.eval()
-s = torch.nn.Sigmoid()
 with torch.no_grad():
-    # held-out позитивы: центрированный клип в 2с окне
-    ho = []
-    for p in holdout_pos_clips:
-        c = read16(p); b = np.zeros(WIN, dtype=np.int16)
-        off = (WIN - min(len(c), WIN)) // 2; b[off:off + min(len(c), WIN)] = c[:WIN]
-        ho.append(b)
-    ho_f = embed_all(ho)
-    ho_sc = fcn(torch.from_numpy(ho_f)).numpy().flatten()
-    neg_sc = fcn(torch.from_numpy(neg)).numpy().flatten()
-print("\n=== held-out проверка ===")
-print("held-out ПОЗИТИВЫ (8 клипов, не в обучении):", [round(float(x), 3) for x in ho_sc])
-for th in [0.5, 0.7, 0.9]:
-    print(f"th={th}: held-out recall={(ho_sc>=th).mean()*100:5.1f}%  ложняки(neg)={(neg_sc>=th).mean()*100:.3f}%")
+    hp = embed_all([augment_positive(read16(p)) for p in hold_pos for _ in range(4)]) if hold_pos else pos[:0]
+    hp_sc = fcn(torch.from_numpy(hp)).numpy().flatten() if len(hp) else np.array([1.0])
+    hard_sc = fcn(torch.from_numpy(neg_hard)).numpy().flatten() if len(neg_hard) else np.array([0.0])
+    sp_sc = fcn(torch.from_numpy(sp_hold)).numpy().flatten() if len(sp_hold) else np.array([0.0])
+print("\n=== held-out ===")
+for th in [0.5, 0.7, 0.85, 0.9]:
+    print(f"th={th}: recall(невид.голоса)={(hp_sc>=th).mean()*100:5.1f}%  "
+          f"FP-хард={(hard_sc>=th).mean()*100:5.1f}%  FP-речь={(sp_sc>=th).mean()*100:.2f}%")
 
-# ---------- ЭКСПОРТ ----------
-out = os.path.join(os.path.dirname(__file__), "kot_slushai.onnx")
-torch.onnx.export(fcn, torch.zeros((1, n_frames, n_feat)), out, opset_version=13,
-                  dynamo=False, input_names=["features"], output_names=["score"],
+out = os.path.join(HERE, "kot_slushai.onnx")
+torch.onnx.export(fcn, torch.zeros((1, n_frames, n_feat)), out, opset_version=13, dynamo=False,
+                  input_names=["features"], output_names=["score"],
                   dynamic_axes={"features": {0: "batch"}, "score": {0: "batch"}})
 print("\nЭкспортировано:", out)

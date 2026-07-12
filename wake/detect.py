@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Живой детектор wake word «Кот, слушай»: микрофон -> AudioFeatures -> onnx -> порог.
+Живой детектор wake word «Эй, кот»: микрофон -> AudioFeatures -> onnx -> порог.
 Фичи считаются ровно как при обучении (скользящее 2-сек окно, embed_clips).
 
 Запуск:   .venv/bin/python detect.py
@@ -46,10 +46,10 @@ def main():
         stream = sd.InputStream(samplerate=native_sr, channels=1, dtype="int16", blocksize=blk)
         stream.start()
     print("=" * 60)
-    print("  Детектор wake word «Кот, слушай»")
+    print("  Детектор wake word «Эй, кот»")
     print(f"  Микрофон: {sd.query_devices(kind='input')['name']} ({native_sr} Гц)")
     print(f"  Порог срабатывания: {TH}   |   Ctrl+C — выход")
-    print("  Скажи «Кот, слушай» — увидишь ✅ РАСПОЗНАЛ")
+    print("  Скажи «Эй, кот» — увидишь ✅ РАСПОЗНАЛ")
     print("=" * 60)
     last_fire = 0.0
     count = 0
@@ -78,7 +78,7 @@ def main():
                 last_fire = time.time()
                 count += 1
                 ts = time.strftime("%H:%M:%S")
-                print(f"\n✅ [{ts}]  РАСПОЗНАЛ «Кот, слушай»   "
+                print(f"\n✅ [{ts}]  РАСПОЗНАЛ «Эй, кот»   "
                       f"(уверенность {sc:.2f}, обработка {ms:.0f}мс, всего: {count})")
     except KeyboardInterrupt:
         print(f"\n\nвыход. Распознаваний за сессию: {count}")
