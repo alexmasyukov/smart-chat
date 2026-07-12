@@ -252,10 +252,10 @@ func detectFrame(_ f: Frame, step: Int, predom: Int, ndown ndownIn: Int, useMid:
 let cond = NSCondition()
 var latest: [String: Any] = ["points": [], "colors": [], "kinds": [], "numbers": [],
                              "lines": [], "cubes": [], "cube_fills": [], "blocks": [String: Any](),
-                             "count": 0, "v": 0, "ms": 0.0]
+                             "count": 0, "v": 0, "ms": 0.0, "show_numbers": false]
 var ver = 0
 
-func doScan(step: Int, predom: Int, ndown: Int, useMid: Bool, full: Bool) -> [String: Any]? {
+func doScan(step: Int, predom: Int, ndown: Int, useMid: Bool, full: Bool, showNumbers: Bool) -> [String: Any]? {
     let t0 = Date()
     guard let f = grabScreen() else { return nil }
     var res = detectFrame(f, step: step, predom: predom, ndown: ndown, useMid: useMid, full: full)
@@ -264,6 +264,7 @@ func doScan(step: Int, predom: Int, ndown: Int, useMid: Bool, full: Bool) -> [St
     ver += 1
     res["v"] = ver
     res["ms"] = (ms * 10).rounded() / 10
+    res["show_numbers"] = showNumbers
     latest = res
     cond.broadcast()
     cond.unlock()
@@ -326,7 +327,8 @@ func handleConn(_ fd: Int32) {
         let ndown = ndownRaw >= 2 ? ndownRaw : NDOWN_DEF
         let useMid = (qs["mid"] ?? "0") == "1"        // 5-я точка опциональна (по умолчанию выкл)
         let full = (qs["full"] ?? "1") == "1"         // «до конца экрана» (по умолчанию вкл)
-        if let r = doScan(step: step, predom: predom, ndown: ndown, useMid: useMid, full: full) {
+        let labels = (qs["labels"] ?? "0") == "1"     // показывать номера точек (по умолчанию выкл)
+        if let r = doScan(step: step, predom: predom, ndown: ndown, useMid: useMid, full: full, showNumbers: labels) {
             sendJSON(fd, 200, ["ok": true, "count": r["count"]!, "v": r["v"]!,
                                "numbers": r["numbers"]!, "colors": r["colors"]!])
         } else {

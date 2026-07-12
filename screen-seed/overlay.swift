@@ -9,7 +9,7 @@ import Foundation
 final class PointsClient {
     private let base: String
     private var lastV = 0
-    var onData: (([[Double]], [String], [Int], [Double], [[Double]], [String]) -> Void)?
+    var onData: (([[Double]], [String], [Int], [Double], [[Double]], [String], Bool) -> Void)?
 
     init() {
         base = ProcessInfo.processInfo.environment["POINTS_URL"]
@@ -37,9 +37,10 @@ final class PointsClient {
                 let lines = (obj["lines"] as? [Double]) ?? []
                 let cubes = (obj["cubes"] as? [[Double]]) ?? []
                 let cubeFills = (obj["cube_fills"] as? [String]) ?? []
+                let showNumbers = (obj["show_numbers"] as? Bool) ?? false
                 FileHandle.standardError.write("[overlay] v=\(v) points=\(pts.count) cubes=\(cubes.count)\n"
                     .data(using: .utf8)!)
-                DispatchQueue.main.async { self.onData?(pts, kinds, numbers, lines, cubes, cubeFills) }
+                DispatchQueue.main.async { self.onData?(pts, kinds, numbers, lines, cubes, cubeFills, showNumbers) }
             } else {
                 delay = 0.5                            // сервер не поднят — притормозим
             }
@@ -90,7 +91,7 @@ final class PointsView: NSView {
     }
 
     func update(_ points: [[Double]], _ kinds: [String], _ numbers: [Int],
-                _ lineXs: [Double], _ cubes: [[Double]], _ cubeFills: [String]) {
+                _ lineXs: [Double], _ cubes: [[Double]], _ cubeFills: [String], _ showNumbers: Bool) {
         let w = bounds.width, h = bounds.height
         let r: CGFloat = 3            // для подписей номеров
         let dr: CGFloat = 1.5         // радиус самой точки (вдвое меньше)
@@ -127,18 +128,19 @@ final class PointsView: NSView {
             // mid — 5-я точка в центре кубика (оранжевая), base/seed — зелёные
             let path = (kind == "probe" || kind == "mid") ? probePath : (kind == "vprobe" ? vprobePath : dotsPath)
             path.addEllipse(in: CGRect(x: x - dr, y: y - dr, width: 2 * dr, height: 2 * dr))
-            let num = i < numbers.count ? numbers[i] : i
 
-            // Номер точки — маленький белый текст высотой ~2 точки, НАД ней.
-            let label = CATextLayer()
-            label.string = "\(num)"
-            label.fontSize = 4 * r                     // высота текста ~2 диаметра точки
-            label.foregroundColor = NSColor.white.cgColor
-            label.alignmentMode = .center
-            label.contentsScale = scale
-            let lw: CGFloat = 30
-            label.frame = CGRect(x: x - lw / 2, y: y + r + 2, width: lw, height: 4 * r + 2)
-            labels.addSublayer(label)
+            if showNumbers {                           // подписи номеров — по галочке
+                let num = i < numbers.count ? numbers[i] : i
+                let label = CATextLayer()
+                label.string = "\(num)"
+                label.fontSize = 4 * r                 // высота текста ~2 диаметра точки
+                label.foregroundColor = NSColor.white.cgColor
+                label.alignmentMode = .center
+                label.contentsScale = scale
+                let lw: CGFloat = 30
+                label.frame = CGRect(x: x - lw / 2, y: y + r + 2, width: lw, height: 4 * r + 2)
+                labels.addSublayer(label)
+            }
         }
         let linesPath = CGMutablePath()
         for nx in lineXs {
@@ -179,8 +181,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         view = PointsView(frame: NSRect(origin: .zero, size: screen.size))
         window.contentView = view
-        client.onData = { [weak self] pts, kinds, nums, lns, cubes, cubeFills in
-            self?.view.update(pts, kinds, nums, lns, cubes, cubeFills)
+        client.onData = { [weak self] pts, kinds, nums, lns, cubes, cubeFills, showNums in
+            self?.view.update(pts, kinds, nums, lns, cubes, cubeFills, showNums)
         }
         client.start()
         window.orderFrontRegardless()
