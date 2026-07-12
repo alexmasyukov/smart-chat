@@ -105,16 +105,40 @@ def embed_window(buf):
     return np.pad(e, ((0, n_frames - len(e)), (0, 0))).astype(np.float32)
 
 
-def embed_all(bufs):
-    """Детерминированный батч: мелспек по клипу + эмбеддинг одним onnx-вызовом."""
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+_tls = threading.local()
+WORKERS = int(os.environ.get("WORKERS", "6"))   # потоков (thread-local ONNX-сессии)
+
+
+def _thread_F():
+    """Своя AudioFeatures на поток (ONNX-сессии не потокобезопасны для шаринга)."""
+    if not hasattr(_tls, "F"):
+        _tls.F = U.AudioFeatures(device="cpu")
+    return _tls.F
+
+
+def _embed_chunk(bufs):
+    Fl = _thread_F()
+    W = []                                                  # окна мелспека клипов чанка
+    for b in bufs:
+        spec = Fl._get_melspectrogram(np.asarray(b, np.int16))
+        w = [spec[i:i + 76] for i in range(0, spec.shape[0], 8) if spec[i:i + 76].shape[0] == 76]
+        assert len(w) == n_frames, f"ожидал {n_frames} окон, вышло {len(w)}"
+        W.extend(w)
+    emb = Fl.embedding_model_predict(np.expand_dims(np.array(W), axis=-1).astype(np.float32))
+    return emb.reshape(len(bufs), n_frames, n_feat).astype(np.float32)
+
+
+def embed_all(bufs, chunk=128):
+    """Детерминированно и ПАРАЛЛЕЛЬНО (порядок чанков сохранён -> результат стабилен)."""
     if not bufs:
         return np.zeros((0, n_frames, n_feat), np.float32)
-    out = np.empty((len(bufs), n_frames, n_feat), np.float32)
-    W = []                                                  # окна мелспека всех клипов
-    for b in bufs:
-        spec = F._get_melspectrogram(np.asarray(b, np.int16))
-        w = [spec[i:i + 76] for i in range(0, spec.shape[0], 8) if spec[i:i + 76].shape[0] == 76]
-        assert len(w) == n_frames, f"ожидал {n_frames} окон, вышло {len(w)} (клип не {WIN} сэмплов?)"
-        W.extend(w)
-    emb = F.embedding_model_predict(np.expand_dims(np.array(W), axis=-1).astype(np.float32))
-    return emb.reshape(len(bufs), n_frames, n_feat).astype(np.float32)
+    chunks = [bufs[i:i + chunk] for i in range(0, len(bufs), chunk)]
+    if len(chunks) == 1 or WORKERS <= 1:
+        parts = [_embed_chunk(c) for c in chunks]
+    else:
+        with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+            parts = list(ex.map(_embed_chunk, chunks))       # map сохраняет порядок
+    return np.vstack(parts).astype(np.float32)
