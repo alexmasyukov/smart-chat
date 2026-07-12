@@ -96,9 +96,25 @@ def synth_noise(k):
     return outs
 
 
+def embed_window(buf):
+    """Детерминированные признаки одного 2-сек окна -> (n_frames, n_feat).
+    ВАЖНО: F.embed_clips (батч) НЕдетерминирован (np.empty-баг) — не использовать!"""
+    e = F._get_embeddings(np.asarray(buf, np.int16))       # (16,96), детерминировано
+    if len(e) >= n_frames:
+        return e[:n_frames].astype(np.float32)
+    return np.pad(e, ((0, n_frames - len(e)), (0, 0))).astype(np.float32)
+
+
 def embed_all(bufs):
+    """Детерминированный батч: мелспек по клипу + эмбеддинг одним onnx-вызовом."""
     if not bufs:
         return np.zeros((0, n_frames, n_feat), np.float32)
-    arr = np.stack(bufs).astype(np.int16)
-    return np.vstack([F.embed_clips(arr[i:i + 1024], batch_size=1024, ncpu=NCPU)
-                      for i in range(0, len(arr), 1024)]).astype(np.float32)
+    out = np.empty((len(bufs), n_frames, n_feat), np.float32)
+    W = []                                                  # окна мелспека всех клипов
+    for b in bufs:
+        spec = F._get_melspectrogram(np.asarray(b, np.int16))
+        w = [spec[i:i + 76] for i in range(0, spec.shape[0], 8) if spec[i:i + 76].shape[0] == 76]
+        assert len(w) == n_frames, f"ожидал {n_frames} окон, вышло {len(w)} (клип не {WIN} сэмплов?)"
+        W.extend(w)
+    emb = F.embedding_model_predict(np.expand_dims(np.array(W), axis=-1).astype(np.float32))
+    return emb.reshape(len(bufs), n_frames, n_feat).astype(np.float32)

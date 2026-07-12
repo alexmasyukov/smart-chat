@@ -30,7 +30,9 @@ buf = np.zeros(WIN, dtype=np.int16)
 
 
 def score():
-    f = F.embed_clips(buf[None, :], batch_size=1).astype(np.float32)
+    # ВАЖНО: _get_embeddings детерминирован; F.embed_clips (батч) — НЕТ (np.empty-баг)
+    e = F._get_embeddings(buf.astype(np.int16))[:16]        # (16,96)
+    f = e[None, :].astype(np.float32)
     return float(sess.run([oname], {iname: f})[0].flatten()[0])
 
 

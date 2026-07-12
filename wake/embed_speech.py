@@ -11,8 +11,8 @@ import numpy as np
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 from scipy.signal import resample_poly
 import soundfile as sf
-import openwakeword.utils as U
 from datasets import load_dataset, Audio
+import wake_common as C            # детерминированный embed_all
 
 SR = 16000
 WIN = 2 * SR
@@ -22,8 +22,6 @@ DATASET = os.environ.get("DATASET", "bond005/sberdevices_golos_10h_crowd")
 CONFIG = os.environ.get("CONFIG", "") or None
 SPLIT = os.environ.get("SPLIT", "train")
 AUDIO_KEY = os.environ.get("AUDIO_KEY", "audio")
-
-F = U.AudioFeatures(device="cpu")
 print(f"качаю {DATASET} [{CONFIG}] потоково, цель {TARGET} окон...", flush=True)
 ds = load_dataset(DATASET, CONFIG, split=SPLIT, streaming=True)
 ds = ds.cast_column(AUDIO_KEY, Audio(decode=False))   # сами декодируем через soundfile
@@ -48,7 +46,7 @@ for ex in ds:
     else:
         wins = [x[s:s + WIN] for s in range(0, len(x) - WIN + 1, STRIDE)]
     if wins:
-        feats.append(F.embed_clips(np.stack(wins), batch_size=256))
+        feats.append(C.embed_all(wins))
     n_utt += 1
     total = sum(f.shape[0] for f in feats)
     if n_utt % 25 == 0:
