@@ -16,6 +16,7 @@ import openwakeword.utils as U
 HERE = os.path.dirname(os.path.abspath(__file__))
 TH = float(os.environ.get("THRESHOLD", "0.85"))
 GATE = float(os.environ.get("GATE", "1200"))   # пиковая амплитуда: тише — считаем тишиной
+CONSEC = int(os.environ.get("CONSEC", "2"))    # сколько окон подряд выше порога для срабатывания
 SR = 16000
 WIN = 2 * SR          # окно 2 сек = (16,96)
 HOP = 4000            # считаем скор каждые 0.25 сек
@@ -53,6 +54,7 @@ def main():
     print("=" * 60)
     last_fire = 0.0
     count = 0
+    consec = 0                                            # подряд окон выше порога
     try:
         while True:
             data, _ = stream.read(stream.blocksize)
@@ -69,12 +71,14 @@ def main():
             sc = score() if peak >= GATE else 0.0         # гейт: на тишине не считаем
             ms = (time.perf_counter() - t0) * 1000        # время обработки окна
 
+            consec = consec + 1 if sc >= TH else 0        # сглаживание: считаем подряд
             filled = int(sc * 30)
             bar = "█" * filled + "·" * (30 - filled)
-            mark = "◄ РАСПОЗНАЮ" if sc >= TH else ""
-            print(f"\rскор {sc:0.2f} [{bar}] {ms:4.0f}мс {mark:<12}", end="", flush=True)
+            mark = f"◄ {consec}/{CONSEC}" if sc >= TH else ""
+            print(f"\rскор {sc:0.2f} [{bar}] {ms:4.0f}мс {mark:<10}", end="", flush=True)
 
-            if sc >= TH and time.time() - last_fire > 1.5:
+            # срабатываем только если порог держится CONSEC окон подряд (режет случайные всплески)
+            if consec >= CONSEC and time.time() - last_fire > 1.5:
                 last_fire = time.time()
                 count += 1
                 ts = time.strftime("%H:%M:%S")

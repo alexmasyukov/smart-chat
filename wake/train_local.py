@@ -40,10 +40,25 @@ def read16(p):
     return (x[:, 0] if x.ndim > 1 else x).astype(np.int16)
 
 
+def reverb(x):
+    """Простая синтетическая реверберация: экспоненциальный хвост + ранние отражения."""
+    dur = RNG.uniform(0.05, 0.25)
+    L = int(dur * SR)
+    ir = np.zeros(L, np.float32)
+    ir[0] = 1.0
+    for _ in range(RNG.randint(2, 6)):           # ранние отражения
+        ir[RNG.randint(1, L)] += RNG.uniform(0.1, 0.5)
+    ir *= np.exp(-np.arange(L) / (SR * RNG.uniform(0.03, 0.12)))
+    y = np.convolve(x, ir)[:len(x)]
+    return y / (np.abs(y).max() + 1e-6) * (np.abs(x).max() + 1e-6)
+
+
 def augment_positive(clip):
     clip = clip.astype(np.float32)
     if RNG.random() < 0.7:                       # темп+высота ±~10%
         clip = resample_poly(clip, 10, RNG.randint(9, 12))
+    if RNG.random() < 0.4:                        # реверберация (комната/микрофон)
+        clip = reverb(clip)
     clip = clip[:WIN]
     buf = np.zeros(WIN, dtype=np.float32)
     off = RNG.randint(0, max(1, WIN - len(clip)))
@@ -162,13 +177,30 @@ class ConvHead(nn.Module):
         return torch.sigmoid(self.fc(self.pool(x).squeeze(-1)))
 
 
+def spec_augment(xb):
+    """Маскируем случайный участок кадров и каналов (регуляризация, меньше FP)."""
+    xb = xb.clone()
+    B, T, C = xb.shape
+    for b in range(B):
+        if torch.rand(1).item() < 0.5:            # маска по времени
+            t = torch.randint(0, 4, (1,)).item()
+            s = torch.randint(0, max(1, T - t), (1,)).item()
+            xb[b, s:s + t, :] = 0
+        if torch.rand(1).item() < 0.5:            # маска по каналам
+            c = torch.randint(0, 12, (1,)).item()
+            s = torch.randint(0, max(1, C - c), (1,)).item()
+            xb[b, :, s:s + c] = 0
+    return xb
+
 fcn = ConvHead(n_feat)
 opt = torch.optim.Adam(fcn.parameters(), lr=8e-4)
+sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=70)
 bce = torch.nn.functional.binary_cross_entropy
-for ep in range(60):
+for ep in range(70):
     fcn.train()
     for xb, yb, wb in dl:
-        opt.zero_grad(); loss = bce(fcn(xb), yb, wb); loss.backward(); opt.step()
+        opt.zero_grad(); loss = bce(fcn(spec_augment(xb)), yb, wb); loss.backward(); opt.step()
+    sched.step()
 
 # ---------- ЧЕСТНАЯ ПРОВЕРКА (held-out) ----------
 fcn.eval()
