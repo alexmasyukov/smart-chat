@@ -9,7 +9,7 @@ import Foundation
 final class PointsClient {
     private let base: String
     private var lastV = 0
-    var onData: (([[Double]], [String], [Int]) -> Void)?
+    var onData: (([[Double]], [String], [Int], [Double]) -> Void)?
 
     init() {
         base = ProcessInfo.processInfo.environment["POINTS_URL"]
@@ -34,9 +34,10 @@ final class PointsClient {
                 self.lastV = v
                 let kinds = (obj["kinds"] as? [String]) ?? Array(repeating: "base", count: pts.count)
                 let numbers = (obj["numbers"] as? [Int]) ?? Array(0..<pts.count)
-                FileHandle.standardError.write("[overlay] v=\(v) points=\(pts.count)\n"
+                let lines = (obj["lines"] as? [Double]) ?? []
+                FileHandle.standardError.write("[overlay] v=\(v) points=\(pts.count) lines=\(lines.count)\n"
                     .data(using: .utf8)!)
-                DispatchQueue.main.async { self.onData?(pts, kinds, numbers) }
+                DispatchQueue.main.async { self.onData?(pts, kinds, numbers, lines) }
             } else {
                 delay = 0.5                            // сервер не поднят — притормозим
             }
@@ -48,6 +49,7 @@ final class PointsClient {
 final class PointsView: NSView {
     private let dots = CAShapeLayer()          // base-точки, зелёные
     private let probeDots = CAShapeLayer()     // probe-точки (несовпадение), оранжевые
+    private let lines = CAShapeLayer()         // уточнённая граница блока, 1px
     private let labels = CALayer()          // хост для подписей номеров точек
 
     override init(frame: NSRect) {
@@ -59,6 +61,10 @@ final class PointsView: NSView {
         dots.strokeColor = NSColor.clear.cgColor
         probeDots.fillColor = NSColor(srgbRed: 1.0, green: 0.55, blue: 0.0, alpha: 0.95).cgColor
         probeDots.strokeColor = NSColor.clear.cgColor
+        lines.fillColor = NSColor.clear.cgColor
+        lines.strokeColor = NSColor(srgbRed: 0.15, green: 1.0, blue: 0.20, alpha: 0.95).cgColor
+        lines.lineWidth = 1
+        host.addSublayer(lines)
         host.addSublayer(dots)
         host.addSublayer(probeDots)
         host.addSublayer(labels)
@@ -66,7 +72,7 @@ final class PointsView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func update(_ points: [[Double]], _ kinds: [String], _ numbers: [Int]) {
+    func update(_ points: [[Double]], _ kinds: [String], _ numbers: [Int], _ lineXs: [Double]) {
         let w = bounds.width, h = bounds.height
         let r: CGFloat = 3
         let scale = self.window?.backingScaleFactor ?? 2.0
@@ -92,12 +98,20 @@ final class PointsView: NSView {
             label.frame = CGRect(x: x - lw / 2, y: y + r + 2, width: lw, height: 4 * r + 2)
             labels.addSublayer(label)
         }
+        let linesPath = CGMutablePath()
+        for nx in lineXs {
+            let x = CGFloat(nx) * w
+            linesPath.move(to: CGPoint(x: x, y: 0))
+            linesPath.addLine(to: CGPoint(x: x, y: h))
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         dots.frame = bounds
         dots.path = dotsPath
         probeDots.frame = bounds
         probeDots.path = probePath
+        lines.frame = bounds
+        lines.path = linesPath
         labels.frame = bounds
         CATransaction.commit()
     }
@@ -121,7 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         view = PointsView(frame: NSRect(origin: .zero, size: screen.size))
         window.contentView = view
-        client.onData = { [weak self] pts, kinds, nums in self?.view.update(pts, kinds, nums) }
+        client.onData = { [weak self] pts, kinds, nums, lns in self?.view.update(pts, kinds, nums, lns) }
         client.start()
         window.orderFrontRegardless()
     }
