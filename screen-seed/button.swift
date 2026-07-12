@@ -104,6 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var stepLabel: NSTextField!
     var pointsSlider: NSSlider!
     var pointsLabel: NSTextField!
+    var fullCheck: NSButton!
     var midCheck: NSButton!
     var logTable: NSTableView!
     let logDataSource = LogDataSource()
@@ -139,7 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         predomSlider.action = #selector(predomMoved)
         window.contentView?.addSubview(predomSlider)
 
-        stepLabel = NSTextField(labelWithString: "Шаг сетки: 80px")
+        stepLabel = NSTextField(labelWithString: "Шаг сетки: 60px")
         stepLabel.frame = NSRect(x: 16, y: 252, width: 290, height: 20)
         stepLabel.alignment = .center
         window.contentView?.addSubview(stepLabel)
@@ -147,7 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stepSlider = NSSlider(frame: NSRect(x: 16, y: 228, width: 290, height: 24))
         stepSlider.minValue = 10
         stepSlider.maxValue = 300
-        stepSlider.integerValue = 80
+        stepSlider.integerValue = 60
         stepSlider.numberOfTickMarks = 30                // 10,20,...,300
         stepSlider.allowsTickMarkValuesOnly = true
         stepSlider.target = self
@@ -169,10 +170,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pointsSlider.action = #selector(pointsMoved)
         window.contentView?.addSubview(pointsSlider)
 
+        fullCheck = NSButton(checkboxWithTitle: "До конца экрана", target: self, action: #selector(fullToggled))
+        fullCheck.frame = NSRect(x: 16, y: 154, width: 290, height: 24)
+        fullCheck.state = .on                            // по умолчанию включено
+        window.contentView?.addSubview(fullCheck)
+
         midCheck = NSButton(checkboxWithTitle: "Строить пятую точку", target: nil, action: nil)
-        midCheck.frame = NSRect(x: 16, y: 140, width: 290, height: 24)
+        midCheck.frame = NSRect(x: 16, y: 126, width: 290, height: 24)
         midCheck.state = .off                            // по умолчанию выключено
         window.contentView?.addSubview(midCheck)
+
+        fullToggled()                                    // применить начальное состояние (points slider off)
 
         // .rounded bezel игнорирует высоту фрейма (фикс. Aqua-высота) — поэтому
         // делаем плоскую кнопку своим layer'ом, она реально растягивается.
@@ -252,6 +260,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pointsLabel.stringValue = "Точек вниз: \(pointsSlider.integerValue)"
     }
 
+    @objc private func fullToggled() {
+        // «До конца экрана» блокирует ручной ползунок «Точек вниз»
+        let on = fullCheck.state == .on
+        pointsSlider.isEnabled = !on
+        pointsLabel.textColor = on ? .disabledControlTextColor : .labelColor
+    }
+
     @objc private func tapped() {
         var comps = URLComponents(url: scanBaseURL, resolvingAgainstBaseURL: false)!
         comps.queryItems = [
@@ -259,6 +274,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             URLQueryItem(name: "step", value: "\(stepSlider.integerValue)"),
             URLQueryItem(name: "ndown", value: "\(pointsSlider.integerValue)"),
             URLQueryItem(name: "mid", value: midCheck.state == .on ? "1" : "0"),
+            URLQueryItem(name: "full", value: fullCheck.state == .on ? "1" : "0"),
         ]
         guard let url = comps.url else { return }
         URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in

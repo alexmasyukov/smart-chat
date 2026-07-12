@@ -13,7 +13,7 @@ func envInt(_ k: String, _ d: Int) -> Int {
     return d
 }
 let PORT = UInt16(envInt("SG_PORT", 8133))
-let STEP_DEF = envInt("SG_STEP", 80)
+let STEP_DEF = envInt("SG_STEP", 60)
 let NDOWN_DEF = envInt("SG_NDOWN", 18)
 let PREDOM_DEF = envInt("SG_PREDOM", 3)
 let PATCH = envInt("SG_PATCH", 6)
@@ -157,11 +157,17 @@ func keyColor(_ key: String) -> String {
 @inline(__always) func r4(_ v: Double) -> Double { (v * 10000).rounded() / 10000 }
 
 // ---- детект (порт detect.py) ----
-func detectFrame(_ f: Frame, step: Int, predom: Int, ndown: Int, useMid: Bool) -> [String: Any] {
+func detectFrame(_ f: Frame, step: Int, predom: Int, ndown ndownIn: Int, useMid: Bool, full: Bool) -> [String: Any] {
     let W = Double(f.w), H = Double(f.h)
     let sx = Double(START_X), sy = Double(START_Y)
     var xs = [Double](); var x = sx
     while x < W { xs.append(x); x += Double(step) }
+    var ndown = ndownIn
+    if full {                                   // «до конца экрана»: сколько точек по высоте влезает
+        var c = 0; var yy = sy
+        while yy < H { c += 1; yy += Double(step) }
+        ndown = max(2, c)
+    }
     let rows = (0..<ndown).map { sy + Double($0) * Double(step) }
 
     var points = [[Double]](), colors = [String](), kinds = [String](), numbers = [Int]()
@@ -249,10 +255,10 @@ var latest: [String: Any] = ["points": [], "colors": [], "kinds": [], "numbers":
                              "count": 0, "v": 0, "ms": 0.0]
 var ver = 0
 
-func doScan(step: Int, predom: Int, ndown: Int, useMid: Bool) -> [String: Any]? {
+func doScan(step: Int, predom: Int, ndown: Int, useMid: Bool, full: Bool) -> [String: Any]? {
     let t0 = Date()
     guard let f = grabScreen() else { return nil }
-    var res = detectFrame(f, step: step, predom: predom, ndown: ndown, useMid: useMid)
+    var res = detectFrame(f, step: step, predom: predom, ndown: ndown, useMid: useMid, full: full)
     let ms = Date().timeIntervalSince(t0) * 1000
     cond.lock()
     ver += 1
@@ -319,7 +325,8 @@ func handleConn(_ fd: Int32) {
         let ndownRaw = Int(qs["ndown"] ?? "") ?? NDOWN_DEF
         let ndown = ndownRaw >= 2 ? ndownRaw : NDOWN_DEF
         let useMid = (qs["mid"] ?? "0") == "1"        // 5-я точка опциональна (по умолчанию выкл)
-        if let r = doScan(step: step, predom: predom, ndown: ndown, useMid: useMid) {
+        let full = (qs["full"] ?? "1") == "1"         // «до конца экрана» (по умолчанию вкл)
+        if let r = doScan(step: step, predom: predom, ndown: ndown, useMid: useMid, full: full) {
             sendJSON(fd, 200, ["ok": true, "count": r["count"]!, "v": r["v"]!,
                                "numbers": r["numbers"]!, "colors": r["colors"]!])
         } else {

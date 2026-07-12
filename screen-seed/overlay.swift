@@ -92,7 +92,8 @@ final class PointsView: NSView {
     func update(_ points: [[Double]], _ kinds: [String], _ numbers: [Int],
                 _ lineXs: [Double], _ cubes: [[Double]], _ cubeFills: [String]) {
         let w = bounds.width, h = bounds.height
-        let r: CGFloat = 3
+        let r: CGFloat = 3            // для подписей номеров
+        let dr: CGFloat = 1.5         // радиус самой точки (вдвое меньше)
         let scale = self.window?.backingScaleFactor ?? 2.0
         // Кубики: [x0, yt, x1, yb] в норм. коорд. детектора (y сверху вниз).
         // Каждый заливаем СВОИМ цветом (cubeFills[i]) — отдельным слоем.
@@ -110,7 +111,7 @@ final class PointsView: NSView {
             rp.addRect(CGRect(x: x0, y: yBot, width: x1 - x0, height: yTop - yBot))
             rectLayer.path = rp
             let hex = ci < cubeFills.count ? cubeFills[ci] : "ff3399"
-            rectLayer.fillColor = colorFromHex(hex, alpha: 0.2).cgColor
+            rectLayer.fillColor = colorFromHex(hex, alpha: 0.1).cgColor
             rectLayer.strokeColor = NSColor.clear.cgColor
             cubeHost.addSublayer(rectLayer)
         }
@@ -125,7 +126,7 @@ final class PointsView: NSView {
             let kind = i < kinds.count ? kinds[i] : "base"
             // mid — 5-я точка в центре кубика (оранжевая), base/seed — зелёные
             let path = (kind == "probe" || kind == "mid") ? probePath : (kind == "vprobe" ? vprobePath : dotsPath)
-            path.addEllipse(in: CGRect(x: x - r, y: y - r, width: 2 * r, height: 2 * r))
+            path.addEllipse(in: CGRect(x: x - dr, y: y - dr, width: 2 * dr, height: 2 * dr))
             let num = i < numbers.count ? numbers[i] : i
 
             // Номер точки — маленький белый текст высотой ~2 точки, НАД ней.
