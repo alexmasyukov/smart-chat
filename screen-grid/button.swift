@@ -110,7 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ?? "http://127.0.0.1:8132/scan"
         scanBaseURL = URL(string: scanURLStr)!
 
-        let size = NSSize(width: 520, height: 300)
+        let size = NSSize(width: 660, height: 300)
         window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                            styleMask: [.titled, .closable, .miniaturizable],
                            backing: .buffered, defer: false)
@@ -173,7 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Лог справа: таблица (тот же порядок, что в out/points_*.txt) —
         // колонки "№" (фикс. ширина, без "лесенки"), hex, кружок-превью.
         // Обновляется после каждого скана.
-        let logScroll = NSScrollView(frame: NSRect(x: 328, y: 16, width: 176, height: 268))
+        let logScroll = NSScrollView(frame: NSRect(x: 328, y: 16, width: 316, height: 268))
         logScroll.hasVerticalScroller = true
         logScroll.autohidesScrollers = false
         logScroll.borderType = .bezelBorder
@@ -192,13 +192,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         logTable.addTableColumn(colNum)
 
         let colHex = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("hex"))
-        colHex.width = 90
+        colHex.width = 180
         logTable.addTableColumn(colHex)
 
         let colSwatch = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("swatch"))
-        colSwatch.width = 28
-        colSwatch.minWidth = 28
-        colSwatch.maxWidth = 28
+        colSwatch.width = 40
+        colSwatch.minWidth = 40
+        colSwatch.maxWidth = 40
         logTable.addTableColumn(colSwatch)
 
         logScroll.documentView = logTable
