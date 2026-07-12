@@ -65,11 +65,12 @@ def color_hex(c):
     return f"{int(round(r)):02x}{int(round(g)):02x}{int(round(b)):02x}"
 
 
-def detect(img):
+def detect(img, step=STEP):
     """BGR-кадр -> (points, colors_hex, kinds, numbers, lines).
 
-    ШАГ 2: точка в центре и ещё 3 над ней; справа (на STEP) ещё одна точка и
+    ШАГ 2: точка в центре и ещё 3 над ней; справа (на step) ещё одна точка и
     3 над ней. Всего 8 точек. Цвет каждой — по одному пикселю (без медианы).
+    step — из ползунка «Шаг сетки» (?step=), иначе дефолт STEP.
     «Сверху» = выше на экране (меньше y). Номера — в порядке построения:
     0 центр, 1-3 над центром, 4 справа, 5-7 над правой."""
     H, W = img.shape[:2]
@@ -77,11 +78,11 @@ def detect(img):
 
     coords = [(cx, cy)]                       # 0: центр (seed)
     for k in range(1, 4):                     # 1-3: три точки над центром
-        coords.append((cx, cy - k * STEP))
-    rx = cx + STEP
+        coords.append((cx, cy - k * step))
+    rx = cx + step
     coords.append((rx, cy))                   # 4: точка справа
     for k in range(1, 4):                     # 5-7: три точки над правой
-        coords.append((rx, cy - k * STEP))
+        coords.append((rx, cy - k * step))
 
     points = [[round(x / W, 4), round(y / H, 4)] for (x, y) in coords]
     colors_hex = [color_hex(color_px(img, x, y)) for (x, y) in coords]
@@ -91,13 +92,13 @@ def detect(img):
     return points, colors_hex, kinds, numbers, lines
 
 
-def do_scan():
+def do_scan(step=STEP):
     """Один проход: снимок -> детект -> публикация в _LATEST."""
     t0 = time.time()
     img = grab_screen()
     if img is None:
         return None
-    points, colors_hex, kinds, numbers, lines = detect(img)
+    points, colors_hex, kinds, numbers, lines = detect(img, step=step)
     with _COND:
         _LATEST.update(ts=round(time.time(), 3), count=len(points),
                        v=_LATEST["v"] + 1, ms=round((time.time() - t0) * 1000, 1),
@@ -124,7 +125,10 @@ class Handler(BaseHTTPRequestHandler):
             with _COND:
                 return self._send(200, {"ok": True, "count": _LATEST["count"]})
         if parsed.path == "/scan":
-            result = do_scan()
+            qs = urllib.parse.parse_qs(parsed.query)
+            step_raw = qs.get("step", [""])[0]
+            step = int(step_raw) if step_raw.isdigit() else STEP
+            result = do_scan(step=step)
             if result is None:
                 return self._send(500, {"error": "screencapture failed"})
             return self._send(200, {"ok": True, "count": result["count"], "v": result["v"],
