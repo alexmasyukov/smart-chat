@@ -83,7 +83,7 @@ def same_color(c1, c2):
 
 
 MISMATCH_CONFIRM = int(os.environ.get("SG_MISMATCH_CONFIRM", "3"))   # сколько точек справа проверяем
-BISECT_MAX = int(os.environ.get("SG_BISECT_MAX", "2"))               # макс. уточнений границы
+BISECT_MAX = int(os.environ.get("SG_BISECT_MAX", "3"))               # макс. уточнений границы
 BISECT_MIN_GAP = float(os.environ.get("SG_BISECT_MIN_GAP", "5"))     # px — дальше не мельчим
 
 
