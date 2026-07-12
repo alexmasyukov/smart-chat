@@ -35,8 +35,8 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 HOST = os.environ.get("SG_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SG_PORT", "8133"))
-STEP = int(os.environ.get("SG_STEP", "40"))                  # шаг между соседними точками, px
-NDOWN = int(os.environ.get("SG_NDOWN", "4"))                 # точек вниз в столбце (ползунок)
+STEP = int(os.environ.get("SG_STEP", "80"))                  # шаг между соседними точками, px
+NDOWN = int(os.environ.get("SG_NDOWN", "18"))                # точек вниз в столбце (ползунок)
 PATCH = int(os.environ.get("SG_PATCH", "6"))                 # размер патча для медианного цвета точки, px
 START_X = int(os.environ.get("SG_START_X", "20"))            # старт: отступ слева, px
 START_Y = int(os.environ.get("SG_START_Y", "20"))            # старт: отступ сверху, px
@@ -89,7 +89,7 @@ def key_color(key):
     return f"{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
 
 
-PREDOM = int(os.environ.get("SG_PREDOM", "2"))               # порог преобладания: цвет >= стольких точек
+PREDOM = int(os.environ.get("SG_PREDOM", "3"))               # порог преобладания: цвет >= стольких точек
 
 
 def predominant(colors4, min_count=PREDOM):

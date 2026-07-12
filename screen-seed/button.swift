@@ -123,7 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.center()
 
-        predomLabel = NSTextField(labelWithString: "Точек на преобладание: 2")
+        predomLabel = NSTextField(labelWithString: "Точек на преобладание: 3")
         predomLabel.frame = NSRect(x: 16, y: 300, width: 290, height: 20)
         predomLabel.alignment = .center
         window.contentView?.addSubview(predomLabel)
@@ -131,14 +131,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         predomSlider = NSSlider(frame: NSRect(x: 16, y: 276, width: 290, height: 24))
         predomSlider.minValue = 2
         predomSlider.maxValue = 8
-        predomSlider.integerValue = 2
+        predomSlider.integerValue = 3
         predomSlider.numberOfTickMarks = 7          // 2,3,...,8
         predomSlider.allowsTickMarkValuesOnly = true
         predomSlider.target = self
         predomSlider.action = #selector(predomMoved)
         window.contentView?.addSubview(predomSlider)
 
-        stepLabel = NSTextField(labelWithString: "Шаг сетки: 150px")
+        stepLabel = NSTextField(labelWithString: "Шаг сетки: 80px")
         stepLabel.frame = NSRect(x: 16, y: 252, width: 290, height: 20)
         stepLabel.alignment = .center
         window.contentView?.addSubview(stepLabel)
@@ -146,14 +146,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stepSlider = NSSlider(frame: NSRect(x: 16, y: 228, width: 290, height: 24))
         stepSlider.minValue = 10
         stepSlider.maxValue = 300
-        stepSlider.integerValue = 150                    // дефолт как раньше
+        stepSlider.integerValue = 80
         stepSlider.numberOfTickMarks = 30                // 10,20,...,300
         stepSlider.allowsTickMarkValuesOnly = true
         stepSlider.target = self
         stepSlider.action = #selector(stepMoved)
         window.contentView?.addSubview(stepSlider)
 
-        pointsLabel = NSTextField(labelWithString: "Точек вниз: 4")
+        pointsLabel = NSTextField(labelWithString: "Точек вниз: 18")
         pointsLabel.frame = NSRect(x: 16, y: 204, width: 290, height: 20)
         pointsLabel.alignment = .center
         window.contentView?.addSubview(pointsLabel)
@@ -161,7 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pointsSlider = NSSlider(frame: NSRect(x: 16, y: 180, width: 290, height: 24))
         pointsSlider.minValue = 2
         pointsSlider.maxValue = 20
-        pointsSlider.integerValue = 4
+        pointsSlider.integerValue = 18
         pointsSlider.numberOfTickMarks = 19              // 2,3,...,20
         pointsSlider.allowsTickMarkValuesOnly = true
         pointsSlider.target = self
