@@ -56,6 +56,45 @@ extension NSColor {
     }
 }
 
+/// Источник данных таблицы лога: колонки "№" (фикс. ширина), "hex", "цвет"
+/// (кружок-превью). NSTableView сам держит колонки ровными — без "лесенки".
+final class LogDataSource: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    var numbers: [Int] = []
+    var colorsHex: [String] = []
+
+    func numberOfRows(in tableView: NSTableView) -> Int { numbers.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard let colId = tableColumn?.identifier.rawValue else { return nil }
+        let hex = colorsHex[row]
+        let font = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
+
+        if colId == "swatch" {
+            let cell = NSTableCellView()
+            let swatch = NSView(frame: NSRect(x: 6, y: 3, width: 16, height: 16))
+            swatch.wantsLayer = true
+            swatch.layer?.backgroundColor = (NSColor(hex: hex) ?? .gray).cgColor
+            swatch.layer?.cornerRadius = 8
+            swatch.layer?.borderWidth = 1
+            swatch.layer?.borderColor = NSColor.white.withAlphaComponent(0.3).cgColor
+            cell.addSubview(swatch)
+            return cell
+        }
+
+        let text = colId == "num" ? "\(numbers[row])" : hex
+        let tf = NSTextField(labelWithString: text)
+        tf.font = font
+        tf.alignment = colId == "num" ? .right : .left
+        tf.frame = NSRect(x: 4, y: 2, width: (tableColumn?.width ?? 60) - 8, height: 18)
+        let cell = NSTableCellView()
+        cell.addSubview(tf)
+        cell.textField = tf
+        return cell
+    }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { 22 }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     var scanBaseURL: URL!
@@ -63,7 +102,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var bisectLabel: NSTextField!
     var stepSlider: NSSlider!
     var stepLabel: NSTextField!
-    var logTextView: NSTextView!
+    var logTable: NSTableView!
+    let logDataSource = LogDataSource()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let scanURLStr = ProcessInfo.processInfo.environment["SCAN_URL"]
@@ -130,23 +170,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.action = #selector(tapped)
         window.contentView?.addSubview(button)
 
-        // Лог справа: тот же формат, что в out/points_*.txt (номер-hex),
-        // плюс цветной "●" перед номером. Обычный скроллящийся текстовый
-        // элемент — NSTextView в NSScrollView. Обновляется после каждого скана.
+        // Лог справа: таблица (тот же порядок, что в out/points_*.txt) —
+        // колонки "№" (фикс. ширина, без "лесенки"), hex, кружок-превью.
+        // Обновляется после каждого скана.
         let logScroll = NSScrollView(frame: NSRect(x: 328, y: 16, width: 176, height: 268))
         logScroll.hasVerticalScroller = true
         logScroll.autohidesScrollers = false
         logScroll.borderType = .bezelBorder
         logScroll.drawsBackground = true
 
-        logTextView = NSTextView(frame: NSRect(origin: .zero, size: logScroll.contentSize))
-        logTextView.isEditable = false
-        logTextView.isSelectable = true
-        logTextView.autoresizingMask = [.width]
-        logTextView.textContainer?.widthTracksTextView = true
-        logTextView.font = NSFont.monospacedSystemFont(ofSize: 15, weight: .regular)
+        logTable = NSTableView(frame: NSRect(origin: .zero, size: logScroll.contentSize))
+        logTable.dataSource = logDataSource
+        logTable.delegate = logDataSource
+        logTable.usesAlternatingRowBackgroundColors = true
+        logTable.headerView = nil                    // без заголовка — панель узкая
 
-        logScroll.documentView = logTextView
+        let colNum = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("num"))
+        colNum.width = 34
+        colNum.minWidth = 34
+        colNum.maxWidth = 34
+        logTable.addTableColumn(colNum)
+
+        let colHex = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("hex"))
+        colHex.width = 90
+        logTable.addTableColumn(colHex)
+
+        let colSwatch = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("swatch"))
+        colSwatch.width = 28
+        colSwatch.minWidth = 28
+        colSwatch.maxWidth = 28
+        logTable.addTableColumn(colSwatch)
+
+        logScroll.documentView = logTable
         window.contentView?.addSubview(logScroll)
 
         window.makeKeyAndOrderFront(nil)
@@ -154,19 +209,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshLog(numbers: [Int], colorsHex: [String]) {
-        let text = NSMutableAttributedString()
-        let font = NSFont.monospacedSystemFont(ofSize: 15, weight: .regular)
-        for (num, hex) in zip(numbers, colorsHex) {
-            let label = NSAttributedString(string: "\(num) - \(hex) ", attributes: [
-                .foregroundColor: NSColor.labelColor, .font: font,
-            ])
-            let dot = NSAttributedString(string: "●\n", attributes: [
-                .foregroundColor: NSColor(hex: hex) ?? .gray, .font: font,
-            ])
-            text.append(label)
-            text.append(dot)
-        }
-        logTextView.textStorage?.setAttributedString(text)
+        logDataSource.numbers = numbers
+        logDataSource.colorsHex = colorsHex
+        logTable.reloadData()
     }
 
     @objc private func bisectMoved() {
