@@ -60,10 +60,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stepSlider.action = #selector(stepMoved)
         window.contentView?.addSubview(stepSlider)
 
-        let button = NSButton(frame: NSRect(x: 20, y: 30, width: 280, height: 80))  // вдвое крупнее
+        // .rounded bezel игнорирует высоту фрейма (фикс. Aqua-высота) — поэтому
+        // делаем плоскую кнопку своим layer'ом, она реально растягивается.
+        let button = NSButton(frame: NSRect(x: 20, y: 30, width: 280, height: 80))
         button.title = "Scan"
-        button.bezelStyle = .rounded
-        button.font = NSFont.systemFont(ofSize: 28)
+        button.isBordered = false
+        button.wantsLayer = true
+        button.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        button.layer?.cornerRadius = 14
+        button.font = NSFont.systemFont(ofSize: 28, weight: .semibold)
+        button.contentTintColor = .white
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 28, weight: .semibold),
+            .foregroundColor: NSColor.white,
+        ]
+        button.attributedTitle = NSAttributedString(string: "Scan", attributes: attrs)
         button.target = self
         button.action = #selector(tapped)
         window.contentView?.addSubview(button)
