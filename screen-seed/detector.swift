@@ -87,8 +87,8 @@ func grabScreen() -> Frame? {
                               bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
         buf.deallocate(); return nil
     }
-    ctx.translateBy(x: 0, y: CGFloat(h))       // перевернуть, чтобы row 0 = верх экрана
-    ctx.scaleBy(x: 1, y: -1)
+    // CGImage из ScreenCaptureKit уже top-left — рисуем БЕЗ флипа, тогда row 0 =
+    // верх экрана (как cv2/screencapture). Флип зеркалил y -> цвета не совпадали с отрисовкой.
     ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
     return Frame(w: w, h: h, bpr: bpr, buf: buf)
 }
