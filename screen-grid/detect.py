@@ -3,11 +3,12 @@
 происходят только по запросу GET /scan (кнопка на оверлее), не по таймеру.
 
 Сканируем ОДНУ строку (y = ROW_FRAC * H) с шагом STEP от X_OFFSET, читаем
-цвет в каждой точке сетки (медиана патча). При несовпадении соседних точек
-ставим у правой ВЕРТИКАЛЬНЫЙ столбик проб (VPROBES сверху и снизу, с тем же
-шагом) и голосуем: если большинство проб — цвета текущего блока, значит
-попали на текст, блок тот же, идём дальше; если нет — настоящая граница,
-уточняем бисекцией ("probe"). Вертикальные пробы ("vprobe") тоже видны.
+цвет в каждой точке сетки (медиана патча). БЛОК = прогон из >= MIN_RUN точек
+подряд одного цвета; граница рисуется только МЕЖДУ двумя такими блоками, не
+по первой сломанной точке (край/шум/узкая полоса игнорируются). Текст внутри
+блока распознаём вертикальным столбиком проб (VPROBES сверху и снизу с тем же
+шагом): большинство проб цвета блока — значит текст, лечим и не рвём прогон.
+Границу уточняем бисекцией ("probe"). Пробы ("vprobe") тоже видны.
 
 Старт (в фоне):
     python3 detect.py                 # слушает http://127.0.0.1:8132
@@ -87,6 +88,7 @@ def same_color(c1, c2):
 
 
 VPROBES = int(os.environ.get("SG_VPROBES", "2"))                     # проб сверху и столько же снизу от i+1
+MIN_RUN = int(os.environ.get("SG_MIN_RUN", "3"))                     # мин. точек подряд одного цвета = блок
 BISECT_MAX = int(os.environ.get("SG_BISECT_MAX", "3"))               # макс. уточнений границы
 BISECT_MIN_GAP = float(os.environ.get("SG_BISECT_MIN_GAP", "5"))     # px — дальше не мельчим
 
@@ -94,27 +96,27 @@ BISECT_MIN_GAP = float(os.environ.get("SG_BISECT_MIN_GAP", "5"))     # px — д
 def scan_row(img, y, x_end, bisect_max=BISECT_MAX, step=STEP):
     """Сканируем строку y слева направо с шагом step от X_OFFSET до x_end.
 
-    Как только соседи по горизонтали i и i+1 разного цвета — это ещё не
-    обязательно граница: i+1 мог случайно сесть на ТЕКСТ внутри того же блока.
-    Чтобы отличить, ставим ВЕРТИКАЛЬНЫЙ столбик проб у точки i+1 — VPROBES
-    точек вверх и столько же вниз с ТЕМ ЖЕ шагом step (далеко по вертикали,
-    чтобы уйти от строки текста и попасть в чистый фон блока). Голосуем:
-    - если большинство проб совпало с цветом текущего блока (i) — значит i+1
-      это текст, блок тот же: лечим цвет i+1 и идём дальше по сетке;
-    - если большинство другого цвета — это НАСТОЯЩАЯ граница блока.
+    Блок = ПРОГОН из >= MIN_RUN точек подряд одного цвета. Граница рисуется
+    только МЕЖДУ двумя такими блоками — не по первой же сломанной точке. Если
+    точка 0 отличается от 1,2,3,4, а 1,2,3,4 одного цвета, то блок начинается
+    с точки 1, а точка 0 — край/шум, отбрасывается.
 
-    Столбик проб — настоящие точки (kind="vprobe"), они видны на оверлее и
-    попадают в лог: так видно, на что опирался детектор.
+    Фаза 1. Идём слева направо, растим прогон одного цвета. Когда сосед j
+    другого цвета — это может быть ТЕКСТ внутри блока: ставим у j ВЕРТИКАЛЬНЫЙ
+    столбик проб (VPROBES вверх и вниз с тем же шагом step, далеко по вертикали
+    — мимо строки текста). Если большинство проб — цвета текущего блока, значит
+    j это текст: лечим и вливаем в прогон. Иначе прогон закрывается, начинается
+    новый. Столбик проб — настоящие точки (kind="vprobe"), видны и в логе.
 
-    Настоящую границу уточняем бисекцией: точка посередине между i и i+1;
-    совпала с run_color (i) — блок правее, делим (эта точка..i+1); не совпала
-    — граница левее, делим (i..эта точка). До BISECT_MAX раз или пока отрезок
-    не сузится до BISECT_MIN_GAP px. Последняя точка ЕЩЁ run_color — граница,
-    по ней рисуем вертикальную линию.
+    Фаза 2. Граница = правый край ПЕРВОГО прогона длиной >= MIN_RUN, но только
+    если дальше есть ЕЩЁ прогон >= MIN_RUN (граница между двумя настоящими
+    блоками, а не сползание в шум/край региона). Уточняем бисекцией между этой
+    точкой i (ещё цвет блока) и i+1: точка посередине, совпала с цветом блока —
+    граница правее, делим (эта точка..i+1), иначе левее (i..эта точка). До
+    BISECT_MAX раз или пока отрезок не сузится до BISECT_MIN_GAP px.
 
-    Номер точки = порядок ЕЁ ОБНАРУЖЕНИЯ. Но в массиве (и в логе) точки стоят
-    по своему МЕСТУ НА ЭКРАНЕ (x, затем y). КАК ТОЛЬКО найдена настоящая
-    граница — дальше по сетке не идём, сосредоточены на ней."""
+    Номер точки = порядок ЕЁ ОБНАРУЖЕНИЯ; в массиве и логе точки стоят по месту
+    на экране (x, затем y)."""
     H = img.shape[0]
     xs_grid = list(np.arange(X_OFFSET, x_end, step, dtype=np.float64))
     colors_grid = [color_at(img, x, y) for x in xs_grid]
@@ -122,33 +124,53 @@ def scan_row(img, y, x_end, bisect_max=BISECT_MAX, step=STEP):
 
     entries = [{"num": i, "x": xs_grid[i], "y": y, "color": colors_grid[i], "kind": "base"}
                for i in range(n)]
-
     next_num = n
     lines = []
-    for i in range(n - 1):
-        if same_color(colors_grid[i], colors_grid[i + 1]):
-            continue
 
-        run_color = colors_grid[i]
-        x_susp = xs_grid[i + 1]
-        vote_same = vote_total = 0
+    def is_text(j, block_color):
+        """Вертикальный столбик проб у точки j (VPROBES вверх и вниз, шаг step):
+        True, если большинство проб — цвета block_color (j это текст в блоке)."""
+        nonlocal next_num
+        x_susp = xs_grid[j]
+        same = total = 0
         for k in list(range(-VPROBES, 0)) + list(range(1, VPROBES + 1)):
             vy = y + k * step
             if vy < 0 or vy >= H:
                 continue
             vcolor = color_at(img, x_susp, vy)
-            entries.append({"num": next_num, "x": x_susp, "y": vy,
-                            "color": vcolor, "kind": "vprobe"})
+            entries.append({"num": next_num, "x": x_susp, "y": vy, "color": vcolor, "kind": "vprobe"})
             next_num += 1
-            vote_total += 1
-            if same_color(vcolor, run_color):
-                vote_same += 1
-        if vote_total == 0 or vote_same * 2 >= vote_total:
-            colors_grid[i + 1] = run_color    # i+1 — текст в том же блоке, лечим цвет, идём дальше
-            continue
+            total += 1
+            if same_color(vcolor, block_color):
+                same += 1
+        return total > 0 and same * 2 >= total
 
+    # Фаза 1 + 2: растим прогоны, ищем правый край первого блока (>= MIN_RUN),
+    # за которым идёт ещё один блок (>= MIN_RUN).
+    run_color = colors_grid[0]
+    start = 0
+    first_block_end = None        # правый край первого подтверждённого блока
+    boundary_i = None             # точка i, слева от которой граница
+    j = 1
+    while j < n:
+        if same_color(colors_grid[j], run_color) or is_text(j, run_color):
+            colors_grid[j] = run_color
+            if first_block_end is not None and j - start + 1 >= MIN_RUN:
+                boundary_i = first_block_end        # второй блок подтверждён -> стоп
+                break
+            j += 1
+            continue
+        if j - start >= MIN_RUN and first_block_end is None:
+            first_block_end = j - 1                  # закрыли первый блок >= MIN_RUN
+        run_color = colors_grid[j]                   # начинаем новый прогон
+        start = j
+        j += 1
+
+    if boundary_i is not None:
+        i = boundary_i
+        run_color = colors_grid[i]
         lo_x, hi_x = xs_grid[i], xs_grid[i + 1]
-        boundary_x = lo_x                     # последняя точка ЕЩЁ run_color
+        boundary_x = lo_x                     # последняя точка ЕЩЁ цвета блока
         for _ in range(bisect_max):
             if hi_x - lo_x <= BISECT_MIN_GAP:
                 break
@@ -162,7 +184,6 @@ def scan_row(img, y, x_end, bisect_max=BISECT_MAX, step=STEP):
             else:
                 hi_x = mid_x
         lines.append(boundary_x)
-        break              # нашли настоящую границу -> дальше не идём
 
     entries.sort(key=lambda e: (e["x"], e["y"]))   # по месту на экране; номер — как присвоен
     xs = [e["x"] for e in entries]
