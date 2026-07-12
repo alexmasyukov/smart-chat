@@ -1,8 +1,23 @@
 node_modules/
-.env
 .idea/
 *.log
 .DS_Store
+# секреты / ключи / креды — на всякий случай, чтобы не утекли
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+secrets.*
+secrets.json
+credentials.json
+service-account*.json
+id_rsa
+id_ed25519
+*.der
 mascot/pet
 .venv/
 __pycache__/
