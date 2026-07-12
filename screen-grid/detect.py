@@ -226,7 +226,8 @@ class Handler(BaseHTTPRequestHandler):
             result = do_scan(bisect_max=bisect_max, step=step)
             if result is None:
                 return self._send(500, {"error": "screencapture failed"})
-            return self._send(200, {"ok": True, "count": result["count"], "v": result["v"]})
+            return self._send(200, {"ok": True, "count": result["count"], "v": result["v"],
+                                     "numbers": result["numbers"], "colors": result["colors"]})
         if parsed.path in ("/points", "/"):
             # long-poll: ?since=<v> — ждём, пока появится скан новее since,
             # и отвечаем сразу в момент его готовности (перерисовка без задержки).

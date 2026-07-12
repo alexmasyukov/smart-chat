@@ -10,9 +10,9 @@ import Foundation
 /// в отличие от .rounded bezel): тёмно-серая, светлеет при наведении,
 /// темнеет при нажатии, курсор — рука.
 final class FlatButton: NSButton {
-    var normalColor: NSColor = NSColor(white: 0.32, alpha: 1)
-    var hoverColor: NSColor = NSColor(white: 0.40, alpha: 1)
-    var pressedColor: NSColor = NSColor(white: 0.20, alpha: 1)
+    var normalColor: NSColor = NSColor(white: 0.16, alpha: 1)
+    var hoverColor: NSColor = NSColor(white: 0.24, alpha: 1)
+    var pressedColor: NSColor = NSColor(white: 0.08, alpha: 1)
     private var isHovering = false
 
     override func updateTrackingAreas() {
@@ -44,6 +44,42 @@ final class FlatButton: NSButton {
     }
 }
 
+extension NSColor {
+    convenience init?(hex: String) {
+        var s = hex
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6, let v = UInt32(s, radix: 16) else { return nil }
+        let r = CGFloat((v >> 16) & 0xFF) / 255
+        let g = CGFloat((v >> 8) & 0xFF) / 255
+        let b = CGFloat(v & 0xFF) / 255
+        self.init(srgbRed: r, green: g, blue: b, alpha: 1)
+    }
+}
+
+/// Строка лога: маленький цветной кружок + текст "номер-hex".
+final class LogRow: NSView {
+    init(number: Int, hex: String) {
+        super.init(frame: .zero)
+        let circle = NSView(frame: NSRect(x: 0, y: 1, width: 14, height: 14))
+        circle.wantsLayer = true
+        circle.layer?.backgroundColor = (NSColor(hex: hex) ?? .gray).cgColor
+        circle.layer?.cornerRadius = 7
+        circle.layer?.borderWidth = 1
+        circle.layer?.borderColor = NSColor.white.withAlphaComponent(0.25).cgColor
+        addSubview(circle)
+
+        let label = NSTextField(labelWithString: "\(number)-\(hex)")
+        label.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        label.textColor = .labelColor
+        label.frame = NSRect(x: 20, y: 0, width: 140, height: 16)
+        addSubview(label)
+
+        frame = NSRect(x: 0, y: 0, width: 170, height: 18)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     var scanBaseURL: URL!
@@ -51,13 +87,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var bisectLabel: NSTextField!
     var stepSlider: NSSlider!
     var stepLabel: NSTextField!
+    var logStack: NSStackView!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let scanURLStr = ProcessInfo.processInfo.environment["SCAN_URL"]
             ?? "http://127.0.0.1:8132/scan"
         scanBaseURL = URL(string: scanURLStr)!
 
-        let size = NSSize(width: 320, height: 300)
+        let size = NSSize(width: 520, height: 300)
         window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                            styleMask: [.titled, .closable, .miniaturizable],
                            backing: .buffered, defer: false)
@@ -117,8 +154,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.action = #selector(tapped)
         window.contentView?.addSubview(button)
 
+        // Лог справа: тот же формат, что в out/points_*.txt (номер-hex),
+        // плюс цветной кружок. Обновляется после каждого скана.
+        let logScroll = NSScrollView(frame: NSRect(x: 328, y: 16, width: 176, height: 268))
+        logScroll.hasVerticalScroller = true
+        logScroll.borderType = .bezelBorder
+        logScroll.drawsBackground = true
+        window.contentView?.addSubview(logScroll)
+
+        logStack = NSStackView()
+        logStack.orientation = .vertical
+        logStack.alignment = .leading
+        logStack.spacing = 3
+        logStack.translatesAutoresizingMaskIntoConstraints = false
+        logScroll.documentView = logStack
+        if let clip = logScroll.contentView as NSClipView? {
+            NSLayoutConstraint.activate([
+                logStack.leadingAnchor.constraint(equalTo: clip.leadingAnchor, constant: 6),
+                logStack.topAnchor.constraint(equalTo: clip.topAnchor, constant: 6),
+                logStack.trailingAnchor.constraint(lessThanOrEqualTo: clip.trailingAnchor, constant: -6),
+            ])
+        }
+
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func refreshLog(numbers: [Int], colorsHex: [String]) {
+        logStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for (num, hex) in zip(numbers, colorsHex) {
+            logStack.addArrangedSubview(LogRow(number: num, hex: hex))
+        }
     }
 
     @objc private func bisectMoved() {
@@ -139,7 +205,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             URLQueryItem(name: "step", value: "\(stepSlider.integerValue)"),
         ]
         guard let url = comps.url else { return }
-        URLSession.shared.dataTask(with: url).resume()
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let self, let data,
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let numbers = obj["numbers"] as? [Int],
+                  let colors = obj["colors"] as? [String] else { return }
+            DispatchQueue.main.async { self.refreshLog(numbers: numbers, colorsHex: colors) }
+        }.resume()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
