@@ -7,15 +7,40 @@ import Foundation
 // ?bisect=<...>&step=<...>.
 
 /// Плоская кнопка со своим layer'ом (реально растягивается на весь фрейм,
-/// в отличие от .rounded bezel) + эффект нажатия — темнеет, пока держишь.
+/// в отличие от .rounded bezel): тёмно-серая, светлеет при наведении,
+/// темнеет при нажатии, курсор — рука.
 final class FlatButton: NSButton {
-    var normalColor: NSColor = .systemGray
-    var pressedColor: NSColor = NSColor.systemGray.blended(withFraction: 0.35, of: .black) ?? .systemGray
+    var normalColor: NSColor = NSColor(white: 0.32, alpha: 1)
+    var hoverColor: NSColor = NSColor(white: 0.40, alpha: 1)
+    var pressedColor: NSColor = NSColor(white: 0.20, alpha: 1)
+    private var isHovering = false
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(rect: bounds,
+                                        options: [.mouseEnteredAndExited, .activeAlways, .cursorUpdate],
+                                        owner: self))
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovering = true
+        layer?.backgroundColor = hoverColor.cgColor
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovering = false
+        layer?.backgroundColor = normalColor.cgColor
+    }
 
     override func mouseDown(with event: NSEvent) {
         layer?.backgroundColor = pressedColor.cgColor
         super.mouseDown(with: event)          // блокирует до mouseUp, тогда и жмёт action
-        layer?.backgroundColor = normalColor.cgColor
+        layer?.backgroundColor = (isHovering ? hoverColor : normalColor).cgColor
     }
 }
 
