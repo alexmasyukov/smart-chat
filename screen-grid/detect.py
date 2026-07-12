@@ -87,8 +87,8 @@ BISECT_MAX = int(os.environ.get("SG_BISECT_MAX", "3"))               # макс.
 BISECT_MIN_GAP = float(os.environ.get("SG_BISECT_MIN_GAP", "5"))     # px — дальше не мельчим
 
 
-def scan_row(img, y, x_end, bisect_max=BISECT_MAX):
-    """Сканируем строку y слева направо с шагом STEP от X_OFFSET до x_end.
+def scan_row(img, y, x_end, bisect_max=BISECT_MAX, step=STEP):
+    """Сканируем строку y слева направо с шагом step от X_OFFSET до x_end.
 
     Для каждой пары соседних точек сетки i, i+1 с несовпавшим цветом
     проверяем ЕЩЁ до MISMATCH_CONFIRM точек справа (i+1..i+MISMATCH_CONFIRM)
@@ -109,7 +109,7 @@ def scan_row(img, y, x_end, bisect_max=BISECT_MAX):
 
     КАК ТОЛЬКО найдено первое расхождение — сосредотачиваемся только на
     его уточнении, дальше по сетке не идём."""
-    xs_grid = list(np.arange(X_OFFSET, x_end, STEP, dtype=np.float64))
+    xs_grid = list(np.arange(X_OFFSET, x_end, step, dtype=np.float64))
     colors_grid = [color_at(img, x, y) for x in xs_grid]
     n = len(xs_grid)
 
@@ -151,7 +151,7 @@ def scan_row(img, y, x_end, bisect_max=BISECT_MAX):
     return xs, colors, kinds, numbers, lines
 
 
-def detect(img, bisect_max=BISECT_MAX):
+def detect(img, bisect_max=BISECT_MAX, step=STEP):
     """BGR-кадр -> (points, colors_hex, kinds, numbers, lines).
 
     points — точки сканирования (сетка + проверочные) в НОРМАЛИЗОВАННЫХ
@@ -164,7 +164,7 @@ def detect(img, bisect_max=BISECT_MAX):
     H, W = img.shape[:2]
     y = H * ROW_FRAC
     x_end = W * REGION_FRAC
-    xs, colors, kinds, numbers, boundary_xs = scan_row(img, y, x_end, bisect_max=bisect_max)
+    xs, colors, kinds, numbers, boundary_xs = scan_row(img, y, x_end, bisect_max=bisect_max, step=step)
 
     points = [[round(x / W, 4), round(y / H, 4)] for x in xs]
     colors_hex = [color_hex(c) for c in colors]
@@ -183,14 +183,14 @@ def save_points_log(colors_hex, numbers):
     return path
 
 
-def do_scan(bisect_max=BISECT_MAX):
+def do_scan(bisect_max=BISECT_MAX, step=STEP):
     """Один проход: снимок экрана (out/screenshot.png) -> детект ->
     публикация в _LATEST -> лог out/points_<метка_времени>.txt."""
     t0 = time.time()
     img = grab_screen()
     if img is None:
         return None
-    points, colors_hex, kinds, numbers, lines = detect(img, bisect_max=bisect_max)
+    points, colors_hex, kinds, numbers, lines = detect(img, bisect_max=bisect_max, step=step)
     with _COND:
         _LATEST.update(ts=round(time.time(), 3), count=len(points),
                         v=_LATEST["v"] + 1, ms=round((time.time() - t0) * 1000, 1),
@@ -221,7 +221,9 @@ class Handler(BaseHTTPRequestHandler):
             qs = urllib.parse.parse_qs(parsed.query)
             bisect_raw = qs.get("bisect", [""])[0]
             bisect_max = int(bisect_raw) if bisect_raw.isdigit() else BISECT_MAX
-            result = do_scan(bisect_max=bisect_max)
+            step_raw = qs.get("step", [""])[0]
+            step = int(step_raw) if step_raw.isdigit() else STEP
+            result = do_scan(bisect_max=bisect_max, step=step)
             if result is None:
                 return self._send(500, {"error": "screencapture failed"})
             return self._send(200, {"ok": True, "count": result["count"], "v": result["v"]})
