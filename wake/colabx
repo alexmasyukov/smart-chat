@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Обёртка над colab CLI: PATH + OAUTHLIB relax (Google возвращает scope без
+# cloud-platform, иначе oauthlib падает при refresh токена).
+export PATH="$HOME/.local/bin:$PATH"
+export OAUTHLIB_RELAX_TOKEN_SCOPE=1
+export OAUTHLIB_IGNORE_SCOPE_CHANGE=1
+exec colab "$@"
