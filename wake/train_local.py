@@ -92,8 +92,20 @@ for p in neg_clips:
 # немного чистого шума и тишины как негативы
 for _ in range(200):
     neg_bufs.append((RNG.randn(WIN) * RNG.uniform(50, 800)).clip(-32768, 32767).astype(np.int16))
+
+# РЕАЛЬНЫЙ эфир микрофона (главное против ложняков на тишине) — на разных уровнях
+amb_clips = glob.glob(os.path.join(os.path.dirname(__file__), "out/ambient/*.wav"))
+amb_bufs = []
+for p in amb_clips:
+    a = read16(p).astype(np.float32)
+    for gain in (0.7, 1.0, 1.5, 2.5, 4.0):
+        g = np.clip(a * gain, -32768, 32767).astype(np.int16)
+        for s in range(0, len(g) - WIN + 1, WIN // 4):
+            amb_bufs.append(g[s:s + WIN])
+neg_bufs.extend(amb_bufs)
+print("реального эфира-негативов:", len(amb_bufs))
 neg = embed_all(neg_bufs)
-print("negatives:", neg.shape, "(из", len(neg_clips), "клипов + шум/тишина)")
+print("negatives:", neg.shape, "(речь + шум + эфир микрофона)")
 
 # ---------- ОБУЧЕНИЕ ----------
 X = np.vstack((neg, pos))

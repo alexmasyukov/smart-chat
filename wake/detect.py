@@ -15,6 +15,7 @@ import openwakeword.utils as U
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TH = float(os.environ.get("THRESHOLD", "0.8"))
+GATE = float(os.environ.get("GATE", "1200"))   # пиковая амплитуда: тише — считаем тишиной
 SR = 16000
 WIN = 2 * SR          # окно 2 сек = (16,96)
 HOP = 4000            # считаем скор каждые 0.25 сек
@@ -63,8 +64,9 @@ def main():
             buf = np.roll(buf, -n)
             buf[-n:] = chunk
 
+            peak = int(np.abs(buf).max())                 # громкость окна
             t0 = time.perf_counter()
-            sc = score()
+            sc = score() if peak >= GATE else 0.0         # гейт: на тишине не считаем
             ms = (time.perf_counter() - t0) * 1000        # время обработки окна
 
             filled = int(sc * 30)
