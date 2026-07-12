@@ -6,6 +6,19 @@ import Foundation
 // сканирования (10..150, шаг 10). Клик -> GET /scan на detect.py с
 // ?bisect=<...>&step=<...>.
 
+/// Плоская кнопка со своим layer'ом (реально растягивается на весь фрейм,
+/// в отличие от .rounded bezel) + эффект нажатия — темнеет, пока держишь.
+final class FlatButton: NSButton {
+    var normalColor: NSColor = .systemGray
+    var pressedColor: NSColor = NSColor.systemGray.blended(withFraction: 0.35, of: .black) ?? .systemGray
+
+    override func mouseDown(with event: NSEvent) {
+        layer?.backgroundColor = pressedColor.cgColor
+        super.mouseDown(with: event)          // блокирует до mouseUp, тогда и жмёт action
+        layer?.backgroundColor = normalColor.cgColor
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     var scanBaseURL: URL!
@@ -62,11 +75,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // .rounded bezel игнорирует высоту фрейма (фикс. Aqua-высота) — поэтому
         // делаем плоскую кнопку своим layer'ом, она реально растягивается.
-        let button = NSButton(frame: NSRect(x: 20, y: 30, width: 280, height: 80))
+        let button = FlatButton(frame: NSRect(x: 20, y: 30, width: 280, height: 80))
         button.title = "Scan"
         button.isBordered = false
         button.wantsLayer = true
-        button.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        button.layer?.backgroundColor = button.normalColor.cgColor
         button.layer?.cornerRadius = 14
         button.font = NSFont.systemFont(ofSize: 28, weight: .semibold)
         button.contentTintColor = .white
