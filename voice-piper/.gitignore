@@ -1,0 +1,6 @@
+.venv/
+out/*.wav
+voices/*.onnx
+voices/*.onnx.json
+__pycache__/
+*.pyc
