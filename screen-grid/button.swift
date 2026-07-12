@@ -19,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ?? "http://127.0.0.1:8132/scan"
         scanBaseURL = URL(string: scanURLStr)!
 
-        let size = NSSize(width: 220, height: 260)
+        let size = NSSize(width: 320, height: 300)
         window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                            styleMask: [.titled, .closable, .miniaturizable],
                            backing: .buffered, defer: false)
@@ -31,11 +31,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.center()
 
         bisectLabel = NSTextField(labelWithString: "Уточнений границы: 3")
-        bisectLabel.frame = NSRect(x: 16, y: 210, width: 190, height: 20)
+        bisectLabel.frame = NSRect(x: 16, y: 260, width: 290, height: 20)
         bisectLabel.alignment = .center
         window.contentView?.addSubview(bisectLabel)
 
-        bisectSlider = NSSlider(frame: NSRect(x: 16, y: 180, width: 190, height: 24))
+        bisectSlider = NSSlider(frame: NSRect(x: 16, y: 230, width: 290, height: 24))
         bisectSlider.minValue = 1
         bisectSlider.maxValue = 10
         bisectSlider.integerValue = 3
@@ -46,24 +46,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.contentView?.addSubview(bisectSlider)
 
         stepLabel = NSTextField(labelWithString: "Шаг сетки: 150px")
-        stepLabel.frame = NSRect(x: 16, y: 140, width: 190, height: 20)
+        stepLabel.frame = NSRect(x: 16, y: 190, width: 290, height: 20)
         stepLabel.alignment = .center
         window.contentView?.addSubview(stepLabel)
 
-        stepSlider = NSSlider(frame: NSRect(x: 16, y: 110, width: 190, height: 24))
+        stepSlider = NSSlider(frame: NSRect(x: 16, y: 160, width: 290, height: 24))
         stepSlider.minValue = 10
-        stepSlider.maxValue = 150
-        stepSlider.integerValue = 150
-        stepSlider.numberOfTickMarks = 15                // 10,20,...,150
+        stepSlider.maxValue = 300
+        stepSlider.integerValue = 150                    // дефолт как раньше
+        stepSlider.numberOfTickMarks = 30                // 10,20,...,300
         stepSlider.allowsTickMarkValuesOnly = true
         stepSlider.target = self
         stepSlider.action = #selector(stepMoved)
         window.contentView?.addSubview(stepSlider)
 
-        let button = NSButton(frame: NSRect(x: 40, y: 35, width: 140, height: 40))
+        let button = NSButton(frame: NSRect(x: 20, y: 30, width: 280, height: 80))  // вдвое крупнее
         button.title = "Scan"
         button.bezelStyle = .rounded
-        button.font = NSFont.systemFont(ofSize: 16)
+        button.font = NSFont.systemFont(ofSize: 28)
         button.target = self
         button.action = #selector(tapped)
         window.contentView?.addSubview(button)
