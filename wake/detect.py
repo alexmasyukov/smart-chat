@@ -44,8 +44,14 @@ def main():
         blk = round(HOP * native_sr / SR)
         stream = sd.InputStream(samplerate=native_sr, channels=1, dtype="int16", blocksize=blk)
         stream.start()
-    print(f"🎤 Слушаю ({native_sr} Гц). Скажи «Кот, слушай». Порог={TH}. Ctrl+C — выход.")
+    print("=" * 60)
+    print("  Детектор wake word «Кот, слушай»")
+    print(f"  Микрофон: {sd.query_devices(kind='input')['name']} ({native_sr} Гц)")
+    print(f"  Порог срабатывания: {TH}   |   Ctrl+C — выход")
+    print("  Скажи «Кот, слушай» — увидишь ✅ РАСПОЗНАЛ")
+    print("=" * 60)
     last_fire = 0.0
+    count = 0
     try:
         while True:
             data, _ = stream.read(stream.blocksize)
@@ -56,15 +62,24 @@ def main():
             n = len(chunk)
             buf = np.roll(buf, -n)
             buf[-n:] = chunk
+
+            t0 = time.perf_counter()
             sc = score()
-            bar = "█" * int(sc * 24)
-            hit = "  🐱 КОТ УСЛЫШАЛ!" if sc >= TH else ""
-            print(f"\r{sc:0.2f} |{bar:<24}|{hit}   ", end="", flush=True)
+            ms = (time.perf_counter() - t0) * 1000        # время обработки окна
+
+            filled = int(sc * 30)
+            bar = "█" * filled + "·" * (30 - filled)
+            mark = "◄ РАСПОЗНАЮ" if sc >= TH else ""
+            print(f"\rскор {sc:0.2f} [{bar}] {ms:4.0f}мс {mark:<12}", end="", flush=True)
+
             if sc >= TH and time.time() - last_fire > 1.5:
                 last_fire = time.time()
-                print(f"\n>>> СРАБОТАЛО ({sc:.2f}) <<<")
+                count += 1
+                ts = time.strftime("%H:%M:%S")
+                print(f"\n✅ [{ts}]  РАСПОЗНАЛ «Кот, слушай»   "
+                      f"(уверенность {sc:.2f}, обработка {ms:.0f}мс, всего: {count})")
     except KeyboardInterrupt:
-        print("\nвыход")
+        print(f"\n\nвыход. Распознаваний за сессию: {count}")
         stream.stop(); stream.close()
 
 
