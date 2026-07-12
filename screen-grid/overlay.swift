@@ -48,7 +48,8 @@ final class PointsClient {
 
 final class PointsView: NSView {
     private let dots = CAShapeLayer()          // base-точки, зелёные
-    private let probeDots = CAShapeLayer()     // probe-точки (несовпадение), оранжевые
+    private let probeDots = CAShapeLayer()     // probe-точки бисекции границы, оранжевые
+    private let vprobeDots = CAShapeLayer()    // vprobe-точки (столбик сверху/снизу), голубые
     private let lines = CAShapeLayer()         // уточнённая граница блока, 1px
     private let labels = CALayer()          // хост для подписей номеров точек
 
@@ -61,12 +62,15 @@ final class PointsView: NSView {
         dots.strokeColor = NSColor.clear.cgColor
         probeDots.fillColor = NSColor(srgbRed: 1.0, green: 0.55, blue: 0.0, alpha: 0.95).cgColor
         probeDots.strokeColor = NSColor.clear.cgColor
+        vprobeDots.fillColor = NSColor(srgbRed: 0.20, green: 0.70, blue: 1.0, alpha: 0.95).cgColor
+        vprobeDots.strokeColor = NSColor.clear.cgColor
         lines.fillColor = NSColor.clear.cgColor
         lines.strokeColor = NSColor(srgbRed: 0.15, green: 1.0, blue: 0.20, alpha: 0.95).cgColor
         lines.lineWidth = 1
         host.addSublayer(lines)
         host.addSublayer(dots)
         host.addSublayer(probeDots)
+        host.addSublayer(vprobeDots)
         host.addSublayer(labels)
     }
 
@@ -78,12 +82,13 @@ final class PointsView: NSView {
         let scale = self.window?.backingScaleFactor ?? 2.0
         let dotsPath = CGMutablePath()
         let probePath = CGMutablePath()
+        let vprobePath = CGMutablePath()
         labels.sublayers?.forEach { $0.removeFromSuperlayer() }
         for (i, p) in points.enumerated() where p.count >= 2 {
             let x = CGFloat(p[0]) * w
             let y = (1 - CGFloat(p[1])) * h          // y детектора сверху вниз -> слой снизу вверх
-            let isProbe = i < kinds.count && kinds[i] == "probe"
-            let path = isProbe ? probePath : dotsPath
+            let kind = i < kinds.count ? kinds[i] : "base"
+            let path = kind == "probe" ? probePath : (kind == "vprobe" ? vprobePath : dotsPath)
             path.addEllipse(in: CGRect(x: x - r, y: y - r, width: 2 * r, height: 2 * r))
             let num = i < numbers.count ? numbers[i] : i
 
@@ -110,6 +115,8 @@ final class PointsView: NSView {
         dots.path = dotsPath
         probeDots.frame = bounds
         probeDots.path = probePath
+        vprobeDots.frame = bounds
+        vprobeDots.path = vprobePath
         lines.frame = bounds
         lines.path = linesPath
         labels.frame = bounds

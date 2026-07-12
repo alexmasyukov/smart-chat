@@ -3,9 +3,11 @@
 происходят только по запросу GET /scan (кнопка на оверлее), не по таймеру.
 
 Сканируем ОДНУ строку (y = ROW_FRAC * H) с шагом STEP от X_OFFSET, читаем
-цвет в каждой точке сетки. При несовпадении соседних точек проверяем ещё
-MISMATCH_CONFIRM точек справа против исходного цвета — если все другие,
-это не шум (текст), ставим ОДНУ точку посередине ("probe", другой цвет).
+цвет в каждой точке сетки (медиана патча). При несовпадении соседних точек
+ставим у правой ВЕРТИКАЛЬНЫЙ столбик проб (VPROBES сверху и снизу, с тем же
+шагом) и голосуем: если большинство проб — цвета текущего блока, значит
+попали на текст, блок тот же, идём дальше; если нет — настоящая граница,
+уточняем бисекцией ("probe"). Вертикальные пробы ("vprobe") тоже видны.
 
 Старт (в фоне):
     python3 detect.py                 # слушает http://127.0.0.1:8132
@@ -63,12 +65,14 @@ def grab_screen():
 
 
 def color_at(img, x, y):
-    """Средний цвет патча PATCH×PATCH вокруг (x, y), BGR."""
+    """Срединный (медианный) цвет патча PATCH×PATCH вокруг (x, y), BGR.
+    Медиана вместо среднего: одиночный выброс-пиксель (тонкая линия, край буквы)
+    не утягивает цвет точки, как утягивало среднее."""
     H, W = img.shape[:2]
     x0, y0 = max(0, int(x)), max(0, int(y))
     x1, y1 = min(W, x0 + PATCH), min(H, y0 + PATCH)
-    roi = img[y0:y1, x0:x1].astype(np.float32)
-    return roi.reshape(-1, 3).mean(axis=0)
+    roi = img[y0:y1, x0:x1].reshape(-1, 3)
+    return np.median(roi, axis=0)
 
 
 def color_hex(c):
@@ -82,7 +86,7 @@ def same_color(c1, c2):
     return bool(np.all(np.round(c1) == np.round(c2)))
 
 
-MISMATCH_CONFIRM = int(os.environ.get("SG_MISMATCH_CONFIRM", "3"))   # сколько точек справа проверяем
+VPROBES = int(os.environ.get("SG_VPROBES", "2"))                     # проб сверху и столько же снизу от i+1
 BISECT_MAX = int(os.environ.get("SG_BISECT_MAX", "3"))               # макс. уточнений границы
 BISECT_MIN_GAP = float(os.environ.get("SG_BISECT_MIN_GAP", "5"))     # px — дальше не мельчим
 
@@ -90,30 +94,33 @@ BISECT_MIN_GAP = float(os.environ.get("SG_BISECT_MIN_GAP", "5"))     # px — д
 def scan_row(img, y, x_end, bisect_max=BISECT_MAX, step=STEP):
     """Сканируем строку y слева направо с шагом step от X_OFFSET до x_end.
 
-    Для каждой пары соседних точек сетки i, i+1 с несовпавшим цветом
-    проверяем ЕЩЁ до MISMATCH_CONFIRM точек справа (i+1..i+MISMATCH_CONFIRM)
-    против цвета точки i. Если ВСЕ они другого цвета — это не шум (текст),
-    а реальная смена цвета. Если хоть одна из проверочных точек совпала
-    с цветом i — это шум, ничего не делаем.
+    Как только соседи по горизонтали i и i+1 разного цвета — это ещё не
+    обязательно граница: i+1 мог случайно сесть на ТЕКСТ внутри того же блока.
+    Чтобы отличить, ставим ВЕРТИКАЛЬНЫЙ столбик проб у точки i+1 — VPROBES
+    точек вверх и столько же вниз с ТЕМ ЖЕ шагом step (далеко по вертикали,
+    чтобы уйти от строки текста и попасть в чистый фон блока). Голосуем:
+    - если большинство проб совпало с цветом текущего блока (i) — значит i+1
+      это текст, блок тот же: лечим цвет i+1 и идём дальше по сетке;
+    - если большинство другого цвета — это НАСТОЯЩАЯ граница блока.
 
-    Когда расхождение подтверждено — уточняем границу: ставим точку
-    посередине между i и i+1. Если её цвет совпал с run_color (i) — блок
-    продолжается дальше вправо, делим пополам новый отрезок (эта точка..
-    i+1). Если цвет другой — граница левее, делим (i..эта точка). Повторяем
-    до BISECT_MAX раз или пока отрезок не сузится до BISECT_MIN_GAP px.
-    Последняя точка ЕЩЁ того же (run_color) цвета — граница блока, по ней
-    рисуем вертикальную линию.
+    Столбик проб — настоящие точки (kind="vprobe"), они видны на оверлее и
+    попадают в лог: так видно, на что опирался детектор.
 
-    Номер точки = порядок ЕЁ ОБНАРУЖЕНИЯ. Но в массиве (и в логе) точки
-    стоят по своему МЕСТУ НА ЭКРАНЕ (geometric x), а не в конце.
+    Настоящую границу уточняем бисекцией: точка посередине между i и i+1;
+    совпала с run_color (i) — блок правее, делим (эта точка..i+1); не совпала
+    — граница левее, делим (i..эта точка). До BISECT_MAX раз или пока отрезок
+    не сузится до BISECT_MIN_GAP px. Последняя точка ЕЩЁ run_color — граница,
+    по ней рисуем вертикальную линию.
 
-    КАК ТОЛЬКО найдено первое расхождение — сосредотачиваемся только на
-    его уточнении, дальше по сетке не идём."""
+    Номер точки = порядок ЕЁ ОБНАРУЖЕНИЯ. Но в массиве (и в логе) точки стоят
+    по своему МЕСТУ НА ЭКРАНЕ (x, затем y). КАК ТОЛЬКО найдена настоящая
+    граница — дальше по сетке не идём, сосредоточены на ней."""
+    H = img.shape[0]
     xs_grid = list(np.arange(X_OFFSET, x_end, step, dtype=np.float64))
     colors_grid = [color_at(img, x, y) for x in xs_grid]
     n = len(xs_grid)
 
-    entries = [{"num": i, "x": xs_grid[i], "color": colors_grid[i], "kind": "base"}
+    entries = [{"num": i, "x": xs_grid[i], "y": y, "color": colors_grid[i], "kind": "base"}
                for i in range(n)]
 
     next_num = n
@@ -121,11 +128,25 @@ def scan_row(img, y, x_end, bisect_max=BISECT_MAX, step=STEP):
     for i in range(n - 1):
         if same_color(colors_grid[i], colors_grid[i + 1]):
             continue
-        lookahead = colors_grid[i + 1: i + 1 + MISMATCH_CONFIRM]
-        if not all(not same_color(colors_grid[i], c) for c in lookahead):
-            continue          # хоть одна справа совпала с исходным цветом -> шум
 
         run_color = colors_grid[i]
+        x_susp = xs_grid[i + 1]
+        vote_same = vote_total = 0
+        for k in list(range(-VPROBES, 0)) + list(range(1, VPROBES + 1)):
+            vy = y + k * step
+            if vy < 0 or vy >= H:
+                continue
+            vcolor = color_at(img, x_susp, vy)
+            entries.append({"num": next_num, "x": x_susp, "y": vy,
+                            "color": vcolor, "kind": "vprobe"})
+            next_num += 1
+            vote_total += 1
+            if same_color(vcolor, run_color):
+                vote_same += 1
+        if vote_total == 0 or vote_same * 2 >= vote_total:
+            colors_grid[i + 1] = run_color    # i+1 — текст в том же блоке, лечим цвет, идём дальше
+            continue
+
         lo_x, hi_x = xs_grid[i], xs_grid[i + 1]
         boundary_x = lo_x                     # последняя точка ЕЩЁ run_color
         for _ in range(bisect_max):
@@ -133,7 +154,7 @@ def scan_row(img, y, x_end, bisect_max=BISECT_MAX, step=STEP):
                 break
             mid_x = (lo_x + hi_x) / 2.0
             mid_color = color_at(img, mid_x, y)
-            entries.append({"num": next_num, "x": mid_x, "color": mid_color, "kind": "probe"})
+            entries.append({"num": next_num, "x": mid_x, "y": y, "color": mid_color, "kind": "probe"})
             next_num += 1
             if same_color(mid_color, run_color):
                 lo_x = mid_x
@@ -141,14 +162,15 @@ def scan_row(img, y, x_end, bisect_max=BISECT_MAX, step=STEP):
             else:
                 hi_x = mid_x
         lines.append(boundary_x)
-        break              # нашли расхождение -> дальше не идём, сосредоточены на нём
+        break              # нашли настоящую границу -> дальше не идём
 
-    entries.sort(key=lambda e: e["x"])          # по месту на экране, номер — как был присвоен
+    entries.sort(key=lambda e: (e["x"], e["y"]))   # по месту на экране; номер — как присвоен
     xs = [e["x"] for e in entries]
+    ys = [e["y"] for e in entries]
     colors = [e["color"] for e in entries]
     kinds = [e["kind"] for e in entries]
     numbers = [e["num"] for e in entries]
-    return xs, colors, kinds, numbers, lines
+    return xs, ys, colors, kinds, numbers, lines
 
 
 def detect(img, bisect_max=BISECT_MAX, step=STEP):
@@ -157,16 +179,16 @@ def detect(img, bisect_max=BISECT_MAX, step=STEP):
     points — точки сканирования (сетка + проверочные) в НОРМАЛИЗОВАННЫХ
     коорд. (0..1, y сверху), отсортированы по месту на экране (слева
     направо). colors_hex — цвет каждой точки в hex, тот же порядок.
-    kinds — "base" | "probe" (проверочная точка между несовпавшими цветами,
-    красится иначе). numbers — присвоенный номер точки (порядок обнаружения,
+    kinds — "base" | "probe" (точка бисекции границы) | "vprobe" (вертикальная
+    проба сверху/снизу от i+1, красится иначе). numbers — номер точки (порядок обнаружения,
     НЕ порядок в массиве) — им подписывается точка и пишется лог.
     lines — нормализованный x уточнённой границы блока (если нашли)."""
     H, W = img.shape[:2]
     y = H * ROW_FRAC
     x_end = W * REGION_FRAC
-    xs, colors, kinds, numbers, boundary_xs = scan_row(img, y, x_end, bisect_max=bisect_max, step=step)
+    xs, ys, colors, kinds, numbers, boundary_xs = scan_row(img, y, x_end, bisect_max=bisect_max, step=step)
 
-    points = [[round(x / W, 4), round(y / H, 4)] for x in xs]
+    points = [[round(px / W, 4), round(py / H, 4)] for px, py in zip(xs, ys)]
     colors_hex = [color_hex(c) for c in colors]
     lines = [round(bx / W, 4) for bx in boundary_xs]
     return points, colors_hex, kinds, numbers, lines
@@ -251,9 +273,10 @@ def snapshot():
     points, colors_hex, kinds, numbers, lines = detect(img)
     canvas = img.copy()
     H, W = img.shape[:2]
+    kind_color = {"base": (0, 255, 0), "probe": (0, 140, 255), "vprobe": (255, 200, 0)}
     for num, (nx, ny), kind in zip(numbers, points, kinds):
         px, py = int(nx * W), int(ny * H)
-        color = (0, 255, 0) if kind == "base" else (0, 140, 255)   # probe — оранжевый
+        color = kind_color.get(kind, (0, 255, 0))   # base зелёный, probe оранж., vprobe голубой
         cv2.circle(canvas, (px, py), 5, color, -1)
         cv2.putText(canvas, str(num), (px + 6, py + 6), cv2.FONT_HERSHEY_SIMPLEX,
                     0.4, (255, 255, 255), 1, cv2.LINE_AA)
