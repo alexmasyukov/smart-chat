@@ -14,10 +14,14 @@ if [[ ! -x button || button.swift -nt button ]]; then
   echo "Собираю button…" >&2
   swiftc -swift-version 5 -O button.swift -o button -framework AppKit -framework Foundation
 fi
+if [[ ! -x detector || detector.swift -nt detector ]]; then
+  echo "Собираю detector…" >&2
+  swiftc -swift-version 5 -O detector.swift -o detector -framework CoreGraphics -framework ScreenCaptureKit -framework Foundation
+fi
 
 if ! curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
-  echo "Запускаю детектор на :${PORT}…" >&2
-  SG_PORT="$PORT" nohup python3 detect.py > out/server.log 2>&1 &
+  echo "Запускаю detector на :${PORT}…" >&2
+  SG_PORT="$PORT" nohup ./detector > out/server.log 2>&1 &
   disown || true
   for _ in $(seq 1 40); do curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1 && break; sleep 0.25; done
 fi

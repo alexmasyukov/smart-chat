@@ -16,6 +16,7 @@ screen-grid/button
 screen-grid/out/
 screen-seed/overlay
 screen-seed/button
+screen-seed/detector
 screen-seed/out/
 # Дообучение: тяжёлые веса (LoRA-адаптеры и сплавленная модель ~0.4ГБ)
 mlx-chat/ft/adapters/

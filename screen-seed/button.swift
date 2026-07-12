@@ -104,6 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var stepLabel: NSTextField!
     var pointsSlider: NSSlider!
     var pointsLabel: NSTextField!
+    var midCheck: NSButton!
     var logTable: NSTableView!
     let logDataSource = LogDataSource()
 
@@ -167,6 +168,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pointsSlider.target = self
         pointsSlider.action = #selector(pointsMoved)
         window.contentView?.addSubview(pointsSlider)
+
+        midCheck = NSButton(checkboxWithTitle: "Строить пятую точку", target: nil, action: nil)
+        midCheck.frame = NSRect(x: 16, y: 140, width: 290, height: 24)
+        midCheck.state = .off                            // по умолчанию выключено
+        window.contentView?.addSubview(midCheck)
 
         // .rounded bezel игнорирует высоту фрейма (фикс. Aqua-высота) — поэтому
         // делаем плоскую кнопку своим layer'ом, она реально растягивается.
@@ -252,6 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             URLQueryItem(name: "predom", value: "\(predomSlider.integerValue)"),
             URLQueryItem(name: "step", value: "\(stepSlider.integerValue)"),
             URLQueryItem(name: "ndown", value: "\(pointsSlider.integerValue)"),
+            URLQueryItem(name: "mid", value: midCheck.state == .on ? "1" : "0"),
         ]
         guard let url = comps.url else { return }
         URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
