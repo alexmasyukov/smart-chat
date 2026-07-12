@@ -55,6 +55,8 @@ def main():
     last_fire = 0.0
     count = 0
     consec = 0                                            # подряд окон выше порога
+    frame = 0
+    IS_TTY = sys.stdout.isatty()
     try:
         while True:
             data, _ = stream.read(stream.blocksize)
@@ -72,10 +74,17 @@ def main():
             ms = (time.perf_counter() - t0) * 1000        # время обработки окна
 
             consec = consec + 1 if sc >= TH else 0        # сглаживание: считаем подряд
-            filled = int(sc * 30)
-            bar = "█" * filled + "·" * (30 - filled)
-            mark = f"◄ {consec}/{CONSEC}" if sc >= TH else ""
-            print(f"\rскор {sc:0.2f} [{bar}] {ms:4.0f}мс {mark:<10}", end="", flush=True)
+            frame += 1
+            if IS_TTY:                                    # живой индикатор (настоящий терминал)
+                filled = int(sc * 30)
+                bar = "█" * filled + "·" * (30 - filled)
+                vol = "🔊" if peak >= GATE else "· "       # микрофон принимает сигнал?
+                mark = f"◄ {consec}/{CONSEC}" if sc >= TH else ""
+                print(f"\rскор {sc:0.2f} [{bar}] {vol}вход {peak:5d} {ms:4.0f}мс {mark:<10}",
+                      end="", flush=True)
+            elif frame % 4 == 0 or sc >= TH:              # без TTY — обычными строками
+                print(f"скор {sc:0.2f}  peak={peak:5d}  {ms:3.0f}мс"
+                      + (f"  ◄ {consec}/{CONSEC}" if sc >= TH else ""), flush=True)
 
             # срабатываем только если порог держится CONSEC окон подряд (режет случайные всплески)
             if consec >= CONSEC and time.time() - last_fire > 1.5:
