@@ -56,30 +56,6 @@ extension NSColor {
     }
 }
 
-/// Строка лога: маленький цветной кружок + текст "номер-hex".
-final class LogRow: NSView {
-    init(number: Int, hex: String) {
-        super.init(frame: .zero)
-        let circle = NSView(frame: NSRect(x: 0, y: 1, width: 14, height: 14))
-        circle.wantsLayer = true
-        circle.layer?.backgroundColor = (NSColor(hex: hex) ?? .gray).cgColor
-        circle.layer?.cornerRadius = 7
-        circle.layer?.borderWidth = 1
-        circle.layer?.borderColor = NSColor.white.withAlphaComponent(0.25).cgColor
-        addSubview(circle)
-
-        let label = NSTextField(labelWithString: "\(number)-\(hex)")
-        label.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        label.textColor = .labelColor
-        label.frame = NSRect(x: 20, y: 0, width: 140, height: 16)
-        addSubview(label)
-
-        frame = NSRect(x: 0, y: 0, width: 170, height: 18)
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-}
-
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     var scanBaseURL: URL!
@@ -87,7 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var bisectLabel: NSTextField!
     var stepSlider: NSSlider!
     var stepLabel: NSTextField!
-    var logStack: NSStackView!
+    var logTextView: NSTextView!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let scanURLStr = ProcessInfo.processInfo.environment["SCAN_URL"]
@@ -155,36 +131,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.contentView?.addSubview(button)
 
         // Лог справа: тот же формат, что в out/points_*.txt (номер-hex),
-        // плюс цветной кружок. Обновляется после каждого скана.
+        // плюс цветной "●" перед номером. Обычный скроллящийся текстовый
+        // элемент — NSTextView в NSScrollView. Обновляется после каждого скана.
         let logScroll = NSScrollView(frame: NSRect(x: 328, y: 16, width: 176, height: 268))
         logScroll.hasVerticalScroller = true
+        logScroll.autohidesScrollers = false
         logScroll.borderType = .bezelBorder
         logScroll.drawsBackground = true
-        window.contentView?.addSubview(logScroll)
 
-        logStack = NSStackView()
-        logStack.orientation = .vertical
-        logStack.alignment = .leading
-        logStack.spacing = 3
-        logStack.translatesAutoresizingMaskIntoConstraints = false
-        logScroll.documentView = logStack
-        if let clip = logScroll.contentView as NSClipView? {
-            NSLayoutConstraint.activate([
-                logStack.leadingAnchor.constraint(equalTo: clip.leadingAnchor, constant: 6),
-                logStack.topAnchor.constraint(equalTo: clip.topAnchor, constant: 6),
-                logStack.trailingAnchor.constraint(lessThanOrEqualTo: clip.trailingAnchor, constant: -6),
-            ])
-        }
+        logTextView = NSTextView(frame: NSRect(origin: .zero, size: logScroll.contentSize))
+        logTextView.isEditable = false
+        logTextView.isSelectable = true
+        logTextView.autoresizingMask = [.width]
+        logTextView.textContainer?.widthTracksTextView = true
+        logTextView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+
+        logScroll.documentView = logTextView
+        window.contentView?.addSubview(logScroll)
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     private func refreshLog(numbers: [Int], colorsHex: [String]) {
-        logStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let text = NSMutableAttributedString()
+        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         for (num, hex) in zip(numbers, colorsHex) {
-            logStack.addArrangedSubview(LogRow(number: num, hex: hex))
+            let dot = NSAttributedString(string: "● ", attributes: [
+                .foregroundColor: NSColor(hex: hex) ?? .gray, .font: font,
+            ])
+            let label = NSAttributedString(string: "\(num)-\(hex)\n", attributes: [
+                .foregroundColor: NSColor.labelColor, .font: font,
+            ])
+            text.append(dot)
+            text.append(label)
         }
+        logTextView.textStorage?.setAttributedString(text)
     }
 
     @objc private func bisectMoved() {
