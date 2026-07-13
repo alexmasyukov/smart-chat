@@ -99,9 +99,11 @@ final class GlowView: NSView {
     private var core = Glow()
     private var halo = Glow()
     private var animating = false
-    private var levelTimer: Timer?
+    private var link: CADisplayLink?
     private var lastVoice = CACurrentMediaTime()
     private let holdTime = 0.7        // сколько ещё анимировать после тишины
+    private var angleCore: CGFloat = 0
+    private var angleHalo: CGFloat = 0
 
     // Плотное замкнутое кольцо оттенков (cyan→blue→purple→magenta→pink→…→cyan):
     // 24 близких стопа вместо шести далёких → переходы плавные, без «границ радуги».
@@ -223,44 +225,37 @@ final class GlowView: NSView {
         applyIdle()   // стартуем со статичного покойного кадра
     }
 
-    /// Разбудить: запустить перелив на 120 Гц (render-server CABasicAnimation —
-    /// плавно, наш процесс на кадры ничего не тратит) и лёгкий таймер уровня.
+    /// Разбудить: запустить CADisplayLink на 120 Гц. Всю анимацию (перелив +
+    /// реакцию на голос) ведём покадрово синхронно с дисплеем — это доказанно
+    /// плавные 120 на прозрачном окне (проверено fpstest), в отличие от Timer,
+    /// который не привязан к vsync и давал дёрганье.
     func wake() {
         lastVoice = CACurrentMediaTime()
         if animating { return }
         animating = true
-        startSpin(core.gradient, duration: 9)
-        startSpin(halo.gradient, duration: 14)
-        // Таймер только подгоняет свечение под голос (scale/opacity), кадры не
-        // рисует. Работает ТОЛЬКО пока говорим; в покое остановлен → нагрузки нет.
-        let t = Timer(timeInterval: 1.0 / 60.0, target: self,
-                      selector: #selector(tick), userInfo: nil, repeats: true)
-        RunLoop.main.add(t, forMode: .common)
-        levelTimer = t
+        let l = displayLink(target: self, selector: #selector(tick(_:)))
+        l.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
+        l.add(to: .main, forMode: .common)
+        link = l
         FileHandle.standardError.write("[assistant] проснулся (голос)\n".data(using: .utf8)!)
     }
 
-    /// Бесконечное вращение градиента в render-server — плавные 120 Гц без участия
-    /// нашего процесса покадрово.
-    private func startSpin(_ layer: CALayer, duration: CFTimeInterval) {
-        let a = CABasicAnimation(keyPath: "transform.rotation.z")
-        a.fromValue = 0
-        a.toValue = CGFloat.pi * 2
-        a.duration = duration
-        a.repeatCount = .infinity
-        a.isRemovedOnCompletion = false
-        layer.add(a, forKey: "spin")
-    }
-
-    @objc private func tick() {
+    @objc private func tick(_ link: CADisplayLink) {
         let now = CACurrentMediaTime()
         let lv = mic.level
         if lv > 0.06 { lastVoice = now }
         if now - lastVoice > holdTime { sleep(); return }
 
+        // Угол вращения ведём по реальному времени кадра — оборот за 9с/14с.
+        let dt = CGFloat(link.duration > 0 ? link.duration : 1.0 / 120.0)
+        angleCore += .pi * 2 * dt / 9
+        angleHalo += .pi * 2 * dt / 14
         let g = powf(max(lv, 0.06), 0.6)
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        core.gradient.transform = CATransform3DMakeRotation(angleCore, 0, 0, 1)
+        halo.gradient.transform = CATransform3DMakeRotation(angleHalo, 0, 0, 1)
         // Голос раздувает свечение наружу и ярчит — резкий «прыжок».
         let sc = CGFloat(1.0 + g * 1.4)
         let sh = CGFloat(1.0 + g * 2.0)
@@ -271,12 +266,10 @@ final class GlowView: NSView {
         CATransaction.commit()
     }
 
-    /// Уснуть: убрать перелив и таймер, зафиксировать статичный покойный кадр.
+    /// Уснуть: остановить display link, зафиксировать статичный покойный кадр.
     private func sleep() {
         animating = false
-        levelTimer?.invalidate(); levelTimer = nil
-        core.gradient.removeAnimation(forKey: "spin")
-        halo.gradient.removeAnimation(forKey: "spin")
+        link?.invalidate(); link = nil
         applyIdle()
         FileHandle.standardError.write("[assistant] уснул (тишина) — анимаций нет\n".data(using: .utf8)!)
     }

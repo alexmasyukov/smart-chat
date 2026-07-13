@@ -32,7 +32,8 @@ final class TestView: NSView {
         let host = CALayer()
         layer = host
         wantsLayer = true
-        host.backgroundColor = NSColor(white: 0.08, alpha: 1).cgColor
+        // Прозрачный фон — чтобы в OVERLAY-режиме окно было по-настоящему прозрачным.
+        host.backgroundColor = NSColor.clear.cgColor
 
         // Конический радужный градиент в центре (наш эффект), вращается render-server.
         let side: CGFloat = 240
@@ -135,6 +136,23 @@ app.setActivationPolicy(.regular)
 final class D: NSObject, NSApplicationDelegate {
     var w: NSWindow!
     func applicationDidFinishLaunching(_ n: Notification) {
+        // OVERLAY=1 — прозрачный borderless оверлей на shielding-уровне (как реальное
+        // приложение), чтобы сравнить джиттер с обычным окном.
+        if ProcessInfo.processInfo.environment["OVERLAY"] == "1" {
+            let scr = NSScreen.main!.frame
+            let f = CGRect(x: scr.midX - 450, y: scr.maxY - 520, width: 900, height: 520)
+            w = NSWindow(contentRect: f, styleMask: [.borderless], backing: .buffered, defer: false)
+            w.isOpaque = false
+            w.backgroundColor = .clear
+            w.hasShadow = false
+            w.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()))
+            w.ignoresMouseEvents = true
+            w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+            w.contentView = TestView(frame: NSRect(origin: .zero, size: f.size))
+            w.orderFrontRegardless()
+            FileHandle.standardError.write("[fpstest] режим OVERLAY (прозрачный borderless)\n".data(using: .utf8)!)
+            return
+        }
         let f = CGRect(x: 200, y: 200, width: 900, height: 520)
         w = NSWindow(contentRect: f, styleMask: [.titled, .closable, .miniaturizable],
                      backing: .buffered, defer: false)
