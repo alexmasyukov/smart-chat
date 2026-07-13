@@ -18,7 +18,8 @@ final class MicLevel {
             let db = 20 * log10(max((sum / Float(n)).squareRoot(), 1e-7))
             var lvl = (db + 52) / 40; lvl = min(max(lvl, 0), 1)
             let cur = self.level
-            self.level = lvl > cur ? cur + (lvl - cur) * 0.85 : cur + (lvl - cur) * 0.16
+            // Резкий рост, БЫСТРЫЙ спад — на паузах кружок сразу сжимается.
+            self.level = lvl > cur ? cur + (lvl - cur) * 0.85 : cur + (lvl - cur) * 0.45
         }
         try? engine.start()
         FileHandle.standardError.write("[fpstest] микрофон запущен\n".data(using: .utf8)!)
