@@ -1,16 +1,22 @@
 import AppKit
 import AVFoundation
 import QuartzCore
+import CoreImage
 
 // =============================================================================
 // Assistant — нативный macOS-оверлей вокруг выреза под камеру (notch).
 //
-// Формы/окна у приложения нет. Прозрачный click-through оверлей на самом верхнем
-// уровне рисует переливающееся размытое свечение по контуру выреза — как у Siri.
-// Микрофон слушается постоянно: пока тихо — мягкое «дыхание», когда говоришь —
-// свечение разрастается и ярчает по уровню голоса.
+// Формы/окна нет. Прозрачный click-through оверлей рисует переливающееся размытое
+// свечение по контуру выреза — как у Siri. Микрофон слушается постоянно: пока
+// тихо — статичное мягкое свечение (НИКАКОЙ анимации, WindowServer не грузится),
+// когда говоришь — свечение оживает, переливается и «прыгает» по уровню голоса.
 //
-// Сборка: build.sh собирает .app-бандл (нужен Info.plist с доступом к микрофону).
+// ВАЖНО про производительность (см. research): здесь НЕ используется Metal.
+// CAMetalLayer — swapchain-поверхность, которую WindowServer перекомпоновывает
+// каждый vsync (120 Гц) даже без презентов, из-за чего WindowServer жрёт CPU
+// постоянно. Core Animation вместо этого: CABasicAnimation крутится внутри
+// render-server (наш процесс спит), размытие запекается ОДИН раз в картинку,
+// а в покое анимации нет вовсе → композитор кеширует статичный кадр.
 // =============================================================================
 
 // MARK: - Микрофон: мгновенный уровень громкости 0..1
@@ -22,11 +28,14 @@ final class MicLevel {
     /// Читается из главного потока (аниматором). Пишется из аудио-потока.
     /// Гонка безвредна — это лишь визуальная величина.
     var level: Float = 0
+    /// Вызывается (из аудио-потока), когда голос пересекает порог снизу вверх —
+    /// сигнал «просыпайся» для спящего свечения. Внутри нужен переход на main.
+    var onVoice: (() -> Void)?
+    private var awake = false
 
     func start() {
         let input = engine.inputNode
         let fmt = input.inputFormat(forBus: 0)
-        // Некоторые устройства отдают 0 каналов до прогрева — тогда пропускаем tap.
         guard fmt.channelCount > 0 else {
             FileHandle.standardError.write("[assistant] нет входных каналов\n".data(using: .utf8)!)
             return
@@ -42,11 +51,13 @@ final class MicLevel {
             // Порог тишины ~-52 dB, «в полный голос» ~-12 dB → нормируем в 0..1.
             var lvl = (db + 52) / 40
             lvl = min(max(lvl, 0), 1)
-            // Сглаживание: очень резкий рост (свечение мгновенно «прыгает» на
-            // голос), заметно более быстрый спад — чтобы движение было живым.
+            // Сглаживание: резкий рост (свечение мгновенно «прыгает»), плавный спад.
             let cur = self.level
             self.level = lvl > cur ? cur + (lvl - cur) * 0.85
                                    : cur + (lvl - cur) * 0.16
+            // Гистерезис на пробуждение: будим при 0.10, взводим снова ниже 0.04.
+            if !self.awake, self.level > 0.10 { self.awake = true; self.onVoice?() }
+            else if self.awake, self.level < 0.04 { self.awake = false }
         }
         do {
             try engine.start()
@@ -60,8 +71,7 @@ final class MicLevel {
 // MARK: - Геометрия выреза
 
 /// Прямоугольник выреза в глобальных координатах экрана (origin снизу-слева).
-/// Если notch нет — возвращает фиктивный «вырез» по центру верхней грани,
-/// чтобы приложение имело смысл и на экранах без выреза.
+/// Если notch нет — фиктивный «вырез» по центру верхней грани.
 func notchRect(on screen: NSScreen) -> CGRect {
     let f = screen.frame
     let top = screen.safeAreaInsets.top
@@ -72,54 +82,39 @@ func notchRect(on screen: NSScreen) -> CGRect {
     return CGRect(x: f.midX - w / 2, y: f.maxY - h, width: w, height: h)
 }
 
-// MARK: - Вид: переливающееся свечение по контуру выреза
+// MARK: - Вид: свечение на Core Animation (без Metal)
 
-/// Одно «кольцо» свечения: копия конического градиента (переливается цветами),
-/// маскированная обводкой контура выреза заданной ширины. Наложение нескольких
-/// колец с растущей шириной и падающей прозрачностью даёт мягкое размытое сияние
-/// БЕЗ CIGaussianBlur — только GPU-композитинг, поэтому плавно на 120 Гц.
-private final class GlowRing {
-    let clip = CALayer()             // несёт маску-обводку; не вращается
-    let gradient = CAGradientLayer() // конический градиент, вращается внутри clip
-    let mask = CAShapeLayer()        // обводка контура выреза
-    let baseWidth: CGFloat           // ширина обводки этого кольца (в покое)
-    let baseAlpha: Float             // вклад кольца в яркость на пике
-
-    init(baseWidth: CGFloat, baseAlpha: Float) {
-        self.baseWidth = baseWidth
-        self.baseAlpha = baseAlpha
-    }
+// Один «слой свечения»: конический радужный градиент, маскированный ЗАПЕЧЁННОЙ
+// размытой обводкой выреза. Градиент вращается через render-server-анимацию
+// (перелив), маска-картинка статична и уже размыта — мягкие края бесплатно.
+private final class Glow {
+    let holder = CALayer()           // несёт маску-картинку; масштабируется по голосу
+    let gradient = CAGradientLayer() // радужный конический градиент; вращается
+    init() {}
 }
 
 final class GlowView: NSView {
-    private var rings: [GlowRing] = []
-    private var notchLocal: CGRect = .zero
-    private var breath: CGFloat = 0
-    private var frames = 0
     let mic = MicLevel()
+    private var notchLocal: CGRect
+    private var core = Glow()
+    private var halo = Glow()
+    private var animating = false
+    private var levelTimer: Timer?
+    private var lastVoice = CACurrentMediaTime()
+    private let holdTime = 0.7        // сколько ещё анимировать после тишины
 
-    // Плотное замкнутое кольцо оттенков cyan→blue→purple→magenta→pink→…→cyan.
-    // Много близких стопов вместо шести далёких — переходы между цветами перестают
-    // читаться резкими «границами радуги». Идём по hue туда-обратно (170°→330°→170°),
-    // минуя зелёный/жёлтый, поэтому настроение остаётся холодным (Siri), а первый и
-    // последний цвет совпадают → бесшовный конический градиент.
+    // Плотное замкнутое кольцо оттенков (cyan→blue→purple→magenta→pink→…→cyan):
+    // 24 близких стопа вместо шести далёких → переходы плавные, без «границ радуги».
+    // Идём по hue туда-обратно (170°→330°→170°), минуя зелёный/жёлтый (холодный Siri).
     private static let palette: [CGColor] = {
         let stops = 24
         return (0..<stops).map { i -> CGColor in
-            let f = Double(i) / Double(stops - 1)          // 0..1
-            let tri = f < 0.5 ? f * 2 : (1 - f) * 2        // 0..1..0 (замыкает кольцо)
-            let hue = (170.0 + tri * 160.0) / 360.0        // 170°..330°
+            let f = Double(i) / Double(stops - 1)
+            let tri = f < 0.5 ? f * 2 : (1 - f) * 2
+            let hue = (170.0 + tri * 160.0) / 360.0
             return NSColor(hue: CGFloat(hue), saturation: 0.82, brightness: 1.0, alpha: 1).cgColor
         }
     }()
-
-    // Кольца свечения генерируются геометрически: ширина растёт, прозрачность падает
-    // плавно и часто (16 колец) — суммарный радиальный профиль получается гладким,
-    // без видимых ступенек между кольцами. Это и есть «размытие» краёв.
-    private static let spec: [(w: CGFloat, a: Float)] = (0..<16).map { i in
-        (w: CGFloat(2.0 * pow(1.32, Double(i))),           // 2 .. ~128
-         a: Float(0.85 * pow(0.75, Double(i))))            // 0.85 .. ~0.01
-    }
 
     init(frame: NSRect, notchLocal: CGRect) {
         self.notchLocal = notchLocal
@@ -129,60 +124,52 @@ final class GlowView: NSView {
         wantsLayer = true
         host.backgroundColor = NSColor.clear.cgColor
 
+        let scale = window?.backingScaleFactor ?? 2
         let outline = notchOutline(notchLocal,
                                    radius: min(notchLocal.height, notchLocal.width / 2) * 0.7)
-        let side = max(bounds.width, bounds.height) * 1.6
-        let c = CGPoint(x: notchLocal.midX, y: notchLocal.midY)
+        let center = CGPoint(x: notchLocal.midX, y: notchLocal.midY)
 
-        // Внешние (широкие) кольца — снизу, ядро — сверху.
-        for (w, a) in GlowView.spec.reversed() {
-            let ring = GlowRing(baseWidth: w, baseAlpha: a)
-            ring.clip.frame = bounds
-            ring.clip.masksToBounds = false
-
-            ring.gradient.frame = CGRect(x: c.x - side / 2, y: c.y - side / 2,
-                                         width: side, height: side)
-            ring.gradient.type = .conic
-            ring.gradient.colors = GlowView.palette
-            ring.gradient.startPoint = CGPoint(x: 0.5, y: 0.5)
-            ring.gradient.endPoint = CGPoint(x: 0.5, y: 0.0)
-            ring.clip.addSublayer(ring.gradient)
-
-            ring.mask.frame = bounds
-            ring.mask.path = outline
-            ring.mask.fillColor = NSColor.clear.cgColor
-            ring.mask.strokeColor = NSColor.white.cgColor  // маска использует альфу
-            ring.mask.lineWidth = w
-            ring.mask.lineCap = .round
-            ring.mask.lineJoin = .round
-            ring.clip.mask = ring.mask
-
-            host.addSublayer(ring.clip)
-            rings.append(ring)
-
-            // Все кольца вращаются синхронно → цвета совпадают, сияние цельное.
-            let spin = CABasicAnimation(keyPath: "transform.rotation.z")
-            spin.fromValue = 0
-            spin.toValue = CGFloat.pi * 2
-            spin.duration = 11
-            spin.repeatCount = .infinity
-            ring.gradient.add(spin, forKey: "spin")
-        }
+        // halo — широкое сильно размытое сияние; core — узкая яркая обводка.
+        setup(halo, outlineLineWidth: 22, blur: 34, idleOpacity: 0.35, host: host,
+              center: center, scale: scale, outline: outline)
+        setup(core, outlineLineWidth: 6, blur: 9, idleOpacity: 0.85, host: host,
+              center: center, scale: scale, outline: outline)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    private var link: CADisplayLink?
+    private func setup(_ glow: Glow, outlineLineWidth lw: CGFloat, blur: CGFloat,
+                       idleOpacity: Float, host: CALayer, center: CGPoint,
+                       scale: CGFloat, outline: CGPath) {
+        // Конический радужный градиент — квадрат с центром в вырезе, чтобы цвета
+        // «оборачивались» вокруг него при вращении.
+        let side = max(bounds.width, bounds.height) * 1.7
+        glow.gradient.frame = CGRect(x: center.x - side / 2, y: center.y - side / 2,
+                                     width: side, height: side)
+        glow.gradient.type = .conic
+        glow.gradient.colors = GlowView.palette
+        glow.gradient.startPoint = CGPoint(x: 0.5, y: 0.5)
+        glow.gradient.endPoint = CGPoint(x: 0.5, y: 0.0)
 
-    // Привязываемся к дисплею вида: кадры идут на частоте экрана (до 120 Гц на
-    // ProMotion). Создаём только когда вид уже в окне (есть к какому дисплею).
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        guard window != nil, link == nil else { return }
-        let l = displayLink(target: self, selector: #selector(tick(_:)))
-        l.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
-        l.add(to: .main, forMode: .common)
-        link = l
+        glow.holder.frame = bounds
+        // Масштабируем свечение из центра выреза (голос «раздувает» сияние наружу).
+        glow.holder.anchorPoint = CGPoint(x: center.x / bounds.width,
+                                          y: center.y / bounds.height)
+        glow.holder.position = center
+        glow.holder.opacity = idleOpacity
+        glow.holder.addSublayer(glow.gradient)
+
+        // Маска: ЗАПЕЧЁННАЯ один раз размытая обводка (настоящий гаусс, но не в
+        // рантайме каждый кадр). Даёт мягкие размытые края почти бесплатно.
+        if let img = bakeGlow(size: bounds.size, scale: scale, outline: outline,
+                              lineWidth: lw, blurSigma: blur) {
+            let mask = CALayer()
+            mask.frame = bounds
+            mask.contentsScale = scale
+            mask.contents = img
+            glow.holder.mask = mask
+        }
+        host.addSublayer(glow.holder)
     }
 
     /// Контур выреза: открытая «U» — по левой стороне вниз, скруглённый низ,
@@ -199,35 +186,110 @@ final class GlowView: NSView {
         return p
     }
 
-    @objc private func tick(_ link: CADisplayLink) {
-        // Реальное время кадра, чтобы «дыхание» шло одинаково при 60 и 120 Гц.
-        breath += CGFloat(link.duration > 0 ? link.duration : 1.0 / 60.0)
-        // Тихое «дыхание» в покое — слабое, чтобы речь резко его перебивала.
-        let pulse = (sin(breath * 1.1) * 0.5 + 0.5) * 0.08 + 0.02   // 0.02..0.10
-        let v = CGFloat(mic.level)
-        // Голос доминирует; gamma<1 подчёркивает пики — свечение ярко «прыгает».
-        let e = max(v, pulse)
-        let g = pow(e, 0.6)
+    /// Запекает размытую обводку в CGImage ОДИН раз: рисуем штрих пути, применяем
+    /// гаусс через Core Image единожды. В рантайме фильтр больше не гоняется.
+    private func bakeGlow(size: CGSize, scale: CGFloat, outline: CGPath,
+                          lineWidth: CGFloat, blurSigma: CGFloat) -> CGImage? {
+        let w = Int(size.width * scale), h = Int(size.height * scale)
+        guard w > 0, h > 0,
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.setStrokeColor(CGColor(gray: 1, alpha: 1))
+        ctx.setLineWidth(lineWidth)
+        ctx.setLineCap(.round)
+        ctx.setLineJoin(.round)
+        ctx.addPath(outline)
+        ctx.strokePath()
+        guard let base = ctx.makeImage() else { return nil }
+        let ci = CIImage(cgImage: base)
+        let blurred = ci.clampedToExtent()
+            .applyingGaussianBlur(sigma: Double(blurSigma * scale))
+            .cropped(to: ci.extent)
+        return CIContext(options: [.useSoftwareRenderer: false])
+            .createCGImage(blurred, from: ci.extent)
+    }
 
-        // Ширина всех колец растёт с голосом (сияние разливается наружу),
-        // яркость — тоже: тускло в покое, вспышка на речи.
-        let widthScale = 0.6 + g * 2.2          // покой ~0.6×, пик ~2.8×
-        let bright = Float(0.28 + g * 0.72)     // общий множитель прозрачности
+    // MARK: сон/пробуждение
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Голос будит спящее свечение (переход на main из аудио-потока).
+        mic.onVoice = { [weak self] in
+            DispatchQueue.main.async { self?.wake() }
+        }
+        applyIdle()   // стартуем со статичного покойного кадра
+    }
+
+    /// Разбудить: запустить перелив на 120 Гц (render-server CABasicAnimation —
+    /// плавно, наш процесс на кадры ничего не тратит) и лёгкий таймер уровня.
+    func wake() {
+        lastVoice = CACurrentMediaTime()
+        if animating { return }
+        animating = true
+        startSpin(core.gradient, duration: 9)
+        startSpin(halo.gradient, duration: 14)
+        // Таймер только подгоняет свечение под голос (scale/opacity), кадры не
+        // рисует. Работает ТОЛЬКО пока говорим; в покое остановлен → нагрузки нет.
+        let t = Timer(timeInterval: 1.0 / 60.0, target: self,
+                      selector: #selector(tick), userInfo: nil, repeats: true)
+        RunLoop.main.add(t, forMode: .common)
+        levelTimer = t
+        FileHandle.standardError.write("[assistant] проснулся (голос)\n".data(using: .utf8)!)
+    }
+
+    /// Бесконечное вращение градиента в render-server — плавные 120 Гц без участия
+    /// нашего процесса покадрово.
+    private func startSpin(_ layer: CALayer, duration: CFTimeInterval) {
+        let a = CABasicAnimation(keyPath: "transform.rotation.z")
+        a.fromValue = 0
+        a.toValue = CGFloat.pi * 2
+        a.duration = duration
+        a.repeatCount = .infinity
+        a.isRemovedOnCompletion = false
+        layer.add(a, forKey: "spin")
+    }
+
+    @objc private func tick() {
+        let now = CACurrentMediaTime()
+        let lv = mic.level
+        if lv > 0.06 { lastVoice = now }
+        if now - lastVoice > holdTime { sleep(); return }
+
+        let g = powf(max(lv, 0.06), 0.6)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        for ring in rings {
-            ring.mask.lineWidth = ring.baseWidth * widthScale
-            ring.clip.opacity = ring.baseAlpha * bright
-        }
+        // Голос раздувает свечение наружу и ярчит — резкий «прыжок».
+        let sc = CGFloat(1.0 + g * 1.4)
+        let sh = CGFloat(1.0 + g * 2.0)
+        core.holder.transform = CATransform3DMakeScale(sc, sc, 1)
+        halo.holder.transform = CATransform3DMakeScale(sh, sh, 1)
+        core.holder.opacity = 0.6 + g * 0.4
+        halo.holder.opacity = 0.25 + g * 0.6
         CATransaction.commit()
+    }
 
-        // Раз в ~2 сек — фактический fps в лог (диагностика частоты кадров).
-        frames += 1
-        if frames % 120 == 0, link.duration > 0 {
-            let fps = Int((1.0 / link.duration).rounded())
-            FileHandle.standardError.write("[assistant] fps≈\(fps)\n".data(using: .utf8)!)
-        }
+    /// Уснуть: убрать перелив и таймер, зафиксировать статичный покойный кадр.
+    private func sleep() {
+        animating = false
+        levelTimer?.invalidate(); levelTimer = nil
+        core.gradient.removeAnimation(forKey: "spin")
+        halo.gradient.removeAnimation(forKey: "spin")
+        applyIdle()
+        FileHandle.standardError.write("[assistant] уснул (тишина) — анимаций нет\n".data(using: .utf8)!)
+    }
+
+    /// Статичное мягкое свечение в покое: без анимаций, WindowServer кеширует.
+    private func applyIdle() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        core.holder.transform = CATransform3DIdentity
+        halo.holder.transform = CATransform3DIdentity
+        core.holder.opacity = 0.7
+        halo.holder.opacity = 0.28
+        CATransaction.commit()
     }
 }
 
@@ -238,15 +300,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var view: GlowView!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Экран с вырезом (обычно встроенный); иначе — основной.
         let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 })
             ?? NSScreen.main
             ?? NSScreen.screens[0]
 
         let n = notchRect(on: screen)
-        // Запас вокруг выреза под свечение: по бокам и вниз (вверх некуда — край).
-        // Большой — блюр/толщина сильно разрастаются на пиках голоса.
-        let mx: CGFloat = 260, my: CGFloat = 220
+        // Окно туго вокруг выреза + запас под свечение (меньше площадь — дешевле
+        // композитинг). Вверх некуда — вырез у самого края экрана.
+        let mx: CGFloat = 170, my: CGFloat = 150
         let frame = CGRect(x: n.minX - mx, y: n.minY - my,
                            width: n.width + 2 * mx, height: n.height + my)
 
@@ -255,12 +316,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
-        // Выше строки меню и выреза — рисуем прямо в зоне notch.
         window.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()))
         window.ignoresMouseEvents = true                 // click-through
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
 
-        // Вырез в локальных координатах вида.
         let notchLocal = CGRect(x: mx, y: my, width: n.width, height: n.height)
         view = GlowView(frame: NSRect(origin: .zero, size: frame.size), notchLocal: notchLocal)
         window.contentView = view
@@ -268,7 +327,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         FileHandle.standardError.write("[assistant] окно \(frame) вырез \(n)\n".data(using: .utf8)!)
 
-        // Микрофон только после разрешения TCC.
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] ok in
             DispatchQueue.main.async {
                 if ok { self?.view.mic.start() }

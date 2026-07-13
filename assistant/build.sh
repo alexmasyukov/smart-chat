@@ -14,7 +14,8 @@ cp Info.plist "$APP/Contents/Info.plist"
 
 echo "Компилирую…" >&2
 swiftc -O -swift-version 5 main.swift -o "$BIN" \
-    -framework AppKit -framework AVFoundation -framework QuartzCore
+    -framework AppKit -framework AVFoundation -framework QuartzCore \
+    -framework CoreImage
 
 # Ad-hoc подпись — стабилизирует запись разрешения микрофона в TCC.
 codesign --force --sign - "$APP" >/dev/null 2>&1 || true
