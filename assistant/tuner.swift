@@ -155,7 +155,9 @@ final class GlowOverlay: NSView {
         for i in 0..<steps {
             let t = CGFloat(i) / CGFloat(steps - 1)             // 0..1 (0 = широкая)
             let w = p.outlineWidth * (1 - t) + 3 * t
-            let a = pow(t, p.falloff)                            // яркость растёт к узким
+            // Как в main: широкая обводка не гаснет в 0 (нижний порог 0.1) —
+            // сохраняется мягкий внешний ореол, яркость растёт к кромке.
+            let a = 0.1 + 0.9 * pow(t, p.falloff)
             cm.setStrokeColor(CGColor(gray: 1, alpha: a))
             cm.setLineWidth(max(w, 1))
             cm.addPath(outline); cm.strokePath()
@@ -175,7 +177,7 @@ final class GlowOverlay: NSView {
     }
 
     @objc private func tick(_ link: CADisplayLink) {
-        mic.attack = 0.9; mic.release = 0.7; mic.sensitivity = p.sensitivity
+        mic.attack = 0.85; mic.release = 0.16; mic.sensitivity = p.sensitivity   // как в main
         let target = mic.level
         let k: Float = target > dispLevel ? p.attack : p.release
         dispLevel += (target - dispLevel) * k
