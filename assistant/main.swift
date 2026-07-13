@@ -100,15 +100,24 @@ final class GlowView: NSView {
     private var orbAngle: CGFloat = 0
     private var dispLevel: Float = 0
 
-    // Насыщенная палитра: чистые яркие тона + тёплый оранжевый акцент.
-    private static let palette: [CGColor] = [
-        NSColor(srgbRed: 0.00, green: 0.90, blue: 1.00, alpha: 1).cgColor,  // cyan
-        NSColor(srgbRed: 0.15, green: 0.35, blue: 1.00, alpha: 1).cgColor,  // blue
-        NSColor(srgbRed: 0.60, green: 0.15, blue: 1.00, alpha: 1).cgColor,  // purple
-        NSColor(srgbRed: 1.00, green: 0.10, blue: 0.65, alpha: 1).cgColor,  // magenta
-        NSColor(srgbRed: 1.00, green: 0.50, blue: 0.10, alpha: 1).cgColor,  // orange
-        NSColor(srgbRed: 0.00, green: 0.90, blue: 1.00, alpha: 1).cgColor,  // cyan (замыкание)
-    ]
+    // Прежние цвета (2-й коммит), но с ПОДНЯТОЙ насыщенностью — оттенки те же.
+    private static let palette: [CGColor] = {
+        let base: [(CGFloat, CGFloat, CGFloat)] = [
+            (0.20, 0.85, 1.00),  // cyan
+            (0.30, 0.45, 1.00),  // blue
+            (0.65, 0.30, 1.00),  // purple
+            (1.00, 0.30, 0.70),  // pink
+            (1.00, 0.55, 0.30),  // orange
+            (0.20, 0.85, 1.00),  // cyan (замыкание)
+        ]
+        return base.map { rgb -> CGColor in
+            let c = NSColor(srgbRed: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1)
+                .usingColorSpace(.deviceRGB)!
+            var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            c.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+            return NSColor(hue: h, saturation: min(s * 1.4, 1), brightness: b, alpha: 1).cgColor
+        }
+    }()
 
     init(frame: NSRect, notchLocal: CGRect) {
         self.notchLocal = notchLocal
@@ -141,7 +150,7 @@ final class GlowView: NSView {
         let outline = notchOutline(notchLocal,
                                    radius: min(notchLocal.height, notchLocal.width / 2) * 0.7)
         if let maskImg = bakeMask(size: bounds.size, scale: scale, outline: outline,
-                                  lineWidth: 12, blur: 20) {
+                                  softBlur: 5) {
             let m = CALayer()
             m.frame = bounds
             m.contentsScale = scale
@@ -167,10 +176,11 @@ final class GlowView: NSView {
         return p
     }
 
-    /// Запекает размытую обводку контура выреза (белая альфа) ОДИН раз — она служит
-    /// статичной маской-формой, под которой крутится радуга.
+    /// Запекает маску-обводку выреза ОДИН раз. Стек обводок от широкой тусклой к
+    /// узкой яркой → альфа максимальна ПРЯМО У КРОМКИ выреза и спадает наружу
+    /// (а не однообразный ровный ободок). Лёгкий блюр сглаживает ступени.
     private func bakeMask(size: CGSize, scale: CGFloat, outline: CGPath,
-                          lineWidth: CGFloat, blur: CGFloat) -> CGImage? {
+                          softBlur: CGFloat) -> CGImage? {
         let W = Int(size.width * scale), H = Int(size.height * scale)
         guard W > 0, H > 0 else { return nil }
         let cs = CGColorSpaceCreateDeviceRGB()
@@ -178,14 +188,20 @@ final class GlowView: NSView {
         guard let cm = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8,
                                  bytesPerRow: 0, space: cs, bitmapInfo: bi) else { return nil }
         cm.scaleBy(x: scale, y: scale)
-        cm.setStrokeColor(CGColor(gray: 1, alpha: 1))
-        cm.setLineWidth(lineWidth)
         cm.setLineCap(.round); cm.setLineJoin(.round)
-        cm.addPath(outline); cm.strokePath()
+        // ширина ↓, альфа ↑ — узкие яркие обводки поверх дают пик у самой кромки.
+        let stack: [(w: CGFloat, a: CGFloat)] = [
+            (64, 0.10), (44, 0.18), (28, 0.32), (16, 0.55), (8, 0.85), (3, 1.0),
+        ]
+        for s in stack {
+            cm.setStrokeColor(CGColor(gray: 1, alpha: s.a))
+            cm.setLineWidth(s.w)
+            cm.addPath(outline); cm.strokePath()
+        }
         guard let strokeImg = cm.makeImage() else { return nil }
         let ci = CIImage(cgImage: strokeImg)
         let blurred = ci.clampedToExtent()
-            .applyingGaussianBlur(sigma: Double(blur * scale)).cropped(to: ci.extent)
+            .applyingGaussianBlur(sigma: Double(softBlur * scale)).cropped(to: ci.extent)
         return CIContext(options: [.useSoftwareRenderer: false])
             .createCGImage(blurred, from: ci.extent)
     }
@@ -233,7 +249,7 @@ final class GlowView: NSView {
         // наружу от выреза и ярчает.
         let s = CGFloat(1.0 + CGFloat(g) * 0.7)
         orb.transform = CATransform3DMakeScale(s, s, 1)
-        orb.opacity = Float(0.55 + g * 0.45)
+        orb.opacity = Float(0.85 + g * 0.15)   // плотнее (меньше прозрачности)
         CATransaction.commit()
     }
 
@@ -249,7 +265,7 @@ final class GlowView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         orb.transform = CATransform3DIdentity
-        orb.opacity = 0.55
+        orb.opacity = 0.85
         CATransaction.commit()
     }
 }
