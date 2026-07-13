@@ -18,8 +18,9 @@ final class MicLevel {
             let db = 20 * log10(max((sum / Float(n)).squareRoot(), 1e-7))
             var lvl = (db + 52) / 40; lvl = min(max(lvl, 0), 1)
             let cur = self.level
-            // Резкий рост, БЫСТРЫЙ спад — на паузах кружок сразу сжимается.
-            self.level = lvl > cur ? cur + (lvl - cur) * 0.85 : cur + (lvl - cur) * 0.45
+            // Резкий рост, ОЧЕНЬ быстрый спад — на паузах речи кружок мгновенно
+            // опадает, создавая живую пульсацию «говорения».
+            self.level = lvl > cur ? cur + (lvl - cur) * 0.9 : cur + (lvl - cur) * 0.7
         }
         try? engine.start()
         FileHandle.standardError.write("[fpstest] микрофон запущен\n".data(using: .utf8)!)
@@ -168,8 +169,9 @@ final class TestView: NSView {
         let tri = phase < 0.5 ? phase*2 : (1-phase)*2                       // 0..1..0
         let x = 13 + CGFloat(tri) * (bounds.width - 26)
         // Правый (размытый) кружок реагирует на голос: раздувается и ярчает.
-        let g = powf(mic.level, 0.6)
-        let s = CGFloat(0.8 + g * 1.1)
+        // Лёгкая gamma>1 гасит тихий фон и подчёркивает пики → чёткая пульсация.
+        let g = powf(mic.level, 1.1)
+        let s = CGFloat(0.7 + g * 1.3)
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
