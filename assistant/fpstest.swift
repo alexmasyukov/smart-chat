@@ -91,7 +91,15 @@ final class TestView: NSView {
         blurHolder.position = blurCenter
         blurGrad.frame = blurHolder.bounds
         blurGrad.type = .conic
-        blurGrad.colors = glow.colors
+        // Палитра из 2-го коммита (7f0e373): холодные тона + тёплый оранжевый акцент.
+        blurGrad.colors = [
+            NSColor(srgbRed: 0.20, green: 0.85, blue: 1.00, alpha: 1).cgColor,  // cyan
+            NSColor(srgbRed: 0.30, green: 0.45, blue: 1.00, alpha: 1).cgColor,  // blue
+            NSColor(srgbRed: 0.65, green: 0.30, blue: 1.00, alpha: 1).cgColor,  // purple
+            NSColor(srgbRed: 1.00, green: 0.30, blue: 0.70, alpha: 1).cgColor,  // pink
+            NSColor(srgbRed: 1.00, green: 0.55, blue: 0.30, alpha: 1).cgColor,  // orange
+            NSColor(srgbRed: 0.20, green: 0.85, blue: 1.00, alpha: 1).cgColor,  // cyan (замыкание)
+        ]
         blurGrad.startPoint = CGPoint(x: 0.5, y: 0.5)
         blurGrad.endPoint = CGPoint(x: 0.5, y: 0)
         blurHolder.addSublayer(blurGrad)
