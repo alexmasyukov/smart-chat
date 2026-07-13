@@ -42,10 +42,11 @@ final class MicLevel {
             // Порог тишины ~-52 dB, «в полный голос» ~-12 dB → нормируем в 0..1.
             var lvl = (db + 52) / 40
             lvl = min(max(lvl, 0), 1)
-            // Сглаживание: быстрый рост, плавный спад.
+            // Сглаживание: очень резкий рост (свечение мгновенно «прыгает» на
+            // голос), заметно более быстрый спад — чтобы движение было живым.
             let cur = self.level
-            self.level = lvl > cur ? cur + (lvl - cur) * 0.6
-                                   : cur + (lvl - cur) * 0.08
+            self.level = lvl > cur ? cur + (lvl - cur) * 0.85
+                                   : cur + (lvl - cur) * 0.16
         }
         do {
             try engine.start()
@@ -123,14 +124,22 @@ final class GlowView: NSView {
 
         startRotation(halo, duration: 14, reverse: false)
         startRotation(core, duration: 9, reverse: true)
-
-        // Анимационный таймер: раз в кадр подгоняем толщину/блюр/яркость под голос.
-        let t = Timer(timeInterval: 1.0 / 60.0, target: self,
-                      selector: #selector(tick), userInfo: nil, repeats: true)
-        RunLoop.main.add(t, forMode: .common)
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    private var link: CADisplayLink?
+
+    // Привязываемся к дисплею вида: кадры идут на частоте экрана (до 120 Гц на
+    // ProMotion). Создаём только когда вид уже в окне (есть к какому дисплею).
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil, link == nil else { return }
+        let l = displayLink(target: self, selector: #selector(tick(_:)))
+        l.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        l.add(to: .main, forMode: .common)
+        link = l
+    }
 
     private func makeStack(key: String, clockwise: Bool) -> GlowStack {
         let s = GlowStack(key: key)
@@ -184,21 +193,28 @@ final class GlowView: NSView {
         s.gradient.add(a, forKey: "spin")
     }
 
-    @objc private func tick() {
-        breath += 1.0 / 60.0
-        // Тихое «дыхание»: медленная синусоида, задаёт минимум жизни в покое.
-        let pulse = (sin(breath * 1.1) * 0.5 + 0.5) * 0.16 + 0.04   // 0.04..0.20
-        let e = max(CGFloat(mic.level), pulse)                       // общая интенсивность
+    @objc private func tick(_ link: CADisplayLink) {
+        // Реальное время кадра, чтобы «дыхание» шло одинаково при 60 и 120 Гц.
+        breath += CGFloat(link.duration > 0 ? link.duration : 1.0 / 60.0)
+        // Тихое «дыхание» в покое — слабое, чтобы речь резко его перебивала.
+        let pulse = (sin(breath * 1.1) * 0.5 + 0.5) * 0.08 + 0.02   // 0.02..0.10
+        let v = CGFloat(mic.level)
+        // Голос доминирует; gamma<1 подчёркивает пики — свечение ярко «прыгает».
+        let e = max(v, pulse)
+        let g = pow(e, 0.6)
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
 
-        core.mask.lineWidth = 2.5 + e * 9
-        halo.mask.lineWidth = 8 + e * 34
-        core.clip.setValue(1.5 + e * 3, forKeyPath: "filters.coreBlur.inputRadius")
-        halo.clip.setValue(7 + e * 22, forKeyPath: "filters.haloBlur.inputRadius")
-        core.clip.opacity = Float(0.55 + e * 0.45)
-        halo.clip.opacity = Float(0.30 + e * 0.55)
+        // Толщина обводки скачет широко: тонкая нить в покое → жирная лента на голосе.
+        core.mask.lineWidth = 2 + g * 22
+        halo.mask.lineWidth = 10 + g * 70
+        // Больше размытия в целом — мягкое сияние, на пиках разливается ещё сильнее.
+        core.clip.setValue(4 + g * 8, forKeyPath: "filters.coreBlur.inputRadius")
+        halo.clip.setValue(18 + g * 44, forKeyPath: "filters.haloBlur.inputRadius")
+        // Яркость тоже прыгает: приглушено в покое, вспыхивает на речи.
+        core.clip.opacity = Float(0.35 + g * 0.65)
+        halo.clip.opacity = Float(0.18 + g * 0.82)
 
         CATransaction.commit()
     }
@@ -218,7 +234,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let n = notchRect(on: screen)
         // Запас вокруг выреза под свечение: по бокам и вниз (вверх некуда — край).
-        let mx: CGFloat = 170, my: CGFloat = 140
+        // Большой — блюр/толщина сильно разрастаются на пиках голоса.
+        let mx: CGFloat = 260, my: CGFloat = 220
         let frame = CGRect(x: n.minX - mx, y: n.minY - my,
                            width: n.width + 2 * mx, height: n.height + my)
 
