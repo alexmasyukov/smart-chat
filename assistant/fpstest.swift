@@ -20,7 +20,8 @@ final class MicLevel {
         let input = engine.inputNode
         let fmt = input.inputFormat(forBus: 0)
         guard fmt.channelCount > 0 else { return }
-        input.installTap(onBus: 0, bufferSize: 1024, format: fmt) { [weak self] buf, _ in
+        // Меньший буфер — уровень обновляется чаще (~94/с вместо ~47/с).
+        input.installTap(onBus: 0, bufferSize: 512, format: fmt) { [weak self] buf, _ in
             guard let self, let ch = buf.floatChannelData?[0] else { return }
             let n = Int(buf.frameLength); if n == 0 { return }
             var sum: Float = 0
@@ -41,6 +42,7 @@ final class TestView: NSView {
     private var link: CADisplayLink?
     private let label = CATextLayer()
     private var t: CGFloat = 0
+    private var dispLevel: Float = 0   // уровень, сглаженный НА КАЖДОМ кадре (120 Гц)
 
     // Палитра (2-й коммит): холодные тона + тёплый оранжевый акцент.
     private static let palette: [CGColor] = [
@@ -275,7 +277,13 @@ final class TestView: NSView {
         lastTs = ts
         t += CGFloat(link.duration > 0 ? link.duration : 1.0 / 120.0)
 
-        let g = powf(mic.level, 1.1)
+        // Уровень из микрофона обновляется ~94/с, а рисуем 120/с. Чтобы рост не был
+        // ступенчатым, интерполируем отображаемый уровень КАЖДЫЙ кадр: быстрый рост
+        // (эффект говорения слышен), плавный спад.
+        let target = mic.level
+        let k: Float = target > dispLevel ? 0.28 : 0.16
+        dispLevel += (target - dispLevel) * k
+        let g = powf(dispLevel, 1.1)
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
