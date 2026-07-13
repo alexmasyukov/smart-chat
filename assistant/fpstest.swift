@@ -16,6 +16,8 @@ final class TestView: NSView {
     private let redDot = CALayer()      // двигается по CADisplayLink
     private let greenDot = CALayer()    // двигается по CABasicAnimation
     private let glow = CAGradientLayer()
+    private let blurHolder = CALayer()          // размытый кружок рядом
+    private let blurGrad = CAGradientLayer()
     private let label = CATextLayer()
     private var link: CADisplayLink?
 
@@ -49,6 +51,32 @@ final class TestView: NSView {
         glow.endPoint = CGPoint(x: 0.5, y: 0)
         host.addSublayer(glow)
         spin(glow, duration: 6)
+
+        // Размытый кружок РЯДОМ (справа) — тот же конический градиент, но края
+        // растворяются радиальной альфа-маской (мягкое размытие) вместо жёсткого
+        // cornerRadius-обрезания у левого. Для сравнения края.
+        let bc = CGPoint(x: frame.midX + 300, y: frame.midY)
+        blurHolder.frame = CGRect(x: bc.x - side/2, y: bc.y - side/2, width: side, height: side)
+        blurGrad.frame = blurHolder.bounds
+        blurGrad.type = .conic
+        blurGrad.colors = glow.colors
+        blurGrad.startPoint = CGPoint(x: 0.5, y: 0.5)
+        blurGrad.endPoint = CGPoint(x: 0.5, y: 0)
+        blurHolder.addSublayer(blurGrad)
+        let bmask = CAGradientLayer()
+        bmask.frame = blurHolder.bounds
+        bmask.type = .radial
+        bmask.colors = [
+            NSColor(white: 1, alpha: 1).cgColor,
+            NSColor(white: 1, alpha: 1).cgColor,
+            NSColor(white: 1, alpha: 0).cgColor,
+        ]
+        bmask.locations = [0.0, 0.3, 1.0]
+        bmask.startPoint = CGPoint(x: 0.5, y: 0.5)
+        bmask.endPoint = CGPoint(x: 1.0, y: 1.0)
+        blurHolder.mask = bmask
+        host.addSublayer(blurHolder)
+        spin(blurGrad, duration: 6)
 
         // Маркеры.
         redDot.frame = CGRect(x: 0, y: frame.height*0.72, width: 26, height: 26)
