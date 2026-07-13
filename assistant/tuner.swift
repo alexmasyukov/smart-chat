@@ -337,19 +337,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func buildPanel() {
-        let W: CGFloat = 440
+        let W: CGFloat = 520
         let presetH: CGFloat = 40
         let panelH = presetH + CGFloat(rows.count) * 26 + 120
         let container = NSView(frame: CGRect(x: 0, y: 0, width: W, height: panelH))
 
-        // Верхний ряд: селект шаблонов + Сохранить + Удалить.
+        // Верхний ряд: селект шаблонов + Сохранить + Удалить + Дефолт.
         popup.target = self; popup.action = #selector(selectPreset)
-        popup.frame = CGRect(x: 15, y: panelH - 32, width: 240, height: 24)
+        popup.frame = CGRect(x: 15, y: panelH - 32, width: 185, height: 24)
         let saveBtn = NSButton(title: "Сохранить…", target: self, action: #selector(savePreset))
-        saveBtn.frame = CGRect(x: 262, y: panelH - 33, width: 100, height: 26)
+        saveBtn.frame = CGRect(x: 204, y: panelH - 33, width: 100, height: 26)
         let delBtn = NSButton(title: "Удалить", target: self, action: #selector(deletePreset))
-        delBtn.frame = CGRect(x: 364, y: panelH - 33, width: 66, height: 26)
-        container.addSubview(popup); container.addSubview(saveBtn); container.addSubview(delBtn)
+        delBtn.frame = CGRect(x: 306, y: panelH - 33, width: 72, height: 26)
+        let defBtn = NSButton(title: "Дефолт", target: self, action: #selector(loadDefaults))
+        defBtn.frame = CGRect(x: 380, y: panelH - 33, width: 90, height: 26)
+        container.addSubview(popup); container.addSubview(saveBtn)
+        container.addSubview(delBtn); container.addSubview(defBtn)
         refreshPopup()
 
         // Ползунки.
@@ -428,9 +431,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func deletePreset() {
         let idx = popup.indexOfSelectedItem - 1
         guard idx >= 0, idx < presets.count else { return }
+        let name = presets[idx].name
+        let a = NSAlert()
+        a.messageText = "Удалить шаблон «\(name)»?"
+        a.informativeText = "Действие нельзя отменить."
+        a.alertStyle = .warning
+        a.addButton(withTitle: "Да, удалить")
+        a.addButton(withTitle: "Нет")
+        guard a.runModal() == .alertFirstButtonReturn else { return }
         presets.remove(at: idx)
         savePresetsToDisk()
         refreshPopup()
+    }
+
+    /// Сбросить все ползунки и эффект на дефолтные настройки (стартовый вид main).
+    @objc private func loadDefaults() {
+        applyParams(Params())
+        popup.selectItem(at: 0)
     }
 
     private func live() { dump.stringValue = overlay.p.dump() }         // без пересборки
