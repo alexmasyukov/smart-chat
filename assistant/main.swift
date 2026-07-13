@@ -74,28 +74,28 @@ func notchRect(on screen: NSScreen) -> CGRect {
 
 // MARK: - Вид: переливающееся свечение по контуру выреза
 
-/// Один «слой свечения»: конический градиент (переливается цветами), вращается
-/// под маской-обводкой выреза, а сверху размывается гауссом → мягкое сияние.
-private struct GlowStack {
-    let clip = CALayer()            // несёт маску-обводку и блюр; не вращается
+/// Одно «кольцо» свечения: копия конического градиента (переливается цветами),
+/// маскированная обводкой контура выреза заданной ширины. Наложение нескольких
+/// колец с растущей шириной и падающей прозрачностью даёт мягкое размытое сияние
+/// БЕЗ CIGaussianBlur — только GPU-композитинг, поэтому плавно на 120 Гц.
+private final class GlowRing {
+    let clip = CALayer()             // несёт маску-обводку; не вращается
     let gradient = CAGradientLayer() // конический градиент, вращается внутри clip
-    let mask = CAShapeLayer()       // обводка контура выреза (задаёт форму свечения)
-    let blur: CIFilter
-    let filterKey: String
+    let mask = CAShapeLayer()        // обводка контура выреза
+    let baseWidth: CGFloat           // ширина обводки этого кольца (в покое)
+    let baseAlpha: Float             // вклад кольца в яркость на пике
 
-    init(key: String) {
-        filterKey = key
-        blur = CIFilter(name: "CIGaussianBlur")!
-        blur.setValue(4, forKey: "inputRadius")
-        blur.name = key
+    init(baseWidth: CGFloat, baseAlpha: Float) {
+        self.baseWidth = baseWidth
+        self.baseAlpha = baseAlpha
     }
 }
 
 final class GlowView: NSView {
-    private var halo: GlowStack!   // толстый сильно размытый ореол
-    private var core: GlowStack!   // тонкая яркая обводка
+    private var rings: [GlowRing] = []
     private var notchLocal: CGRect = .zero
     private var breath: CGFloat = 0
+    private var frames = 0
     let mic = MicLevel()
 
     // Палитра Siri: холодные переливы с тёплым акцентом; массив замкнут для
@@ -109,6 +109,17 @@ final class GlowView: NSView {
         NSColor(srgbRed: 0.20, green: 0.85, blue: 1.00, alpha: 1).cgColor,
     ]
 
+    // Кольца от узкого яркого ядра к широкому тусклому ореолу. Суммарный профиль
+    // прозрачности — плавно спадающий, что и читается как «размытие» краёв.
+    private static let spec: [(w: CGFloat, a: Float)] = [
+        (2,  1.00),
+        (7,  0.55),
+        (16, 0.32),
+        (32, 0.18),
+        (58, 0.10),
+        (96, 0.05),
+    ]
+
     init(frame: NSRect, notchLocal: CGRect) {
         self.notchLocal = notchLocal
         super.init(frame: frame)
@@ -117,13 +128,45 @@ final class GlowView: NSView {
         wantsLayer = true
         host.backgroundColor = NSColor.clear.cgColor
 
-        halo = makeStack(key: "haloBlur", clockwise: true)
-        core = makeStack(key: "coreBlur", clockwise: false)
-        host.addSublayer(halo.clip)
-        host.addSublayer(core.clip)
+        let outline = notchOutline(notchLocal,
+                                   radius: min(notchLocal.height, notchLocal.width / 2) * 0.7)
+        let side = max(bounds.width, bounds.height) * 1.6
+        let c = CGPoint(x: notchLocal.midX, y: notchLocal.midY)
 
-        startRotation(halo, duration: 14, reverse: false)
-        startRotation(core, duration: 9, reverse: true)
+        // Внешние (широкие) кольца — снизу, ядро — сверху.
+        for (w, a) in GlowView.spec.reversed() {
+            let ring = GlowRing(baseWidth: w, baseAlpha: a)
+            ring.clip.frame = bounds
+            ring.clip.masksToBounds = false
+
+            ring.gradient.frame = CGRect(x: c.x - side / 2, y: c.y - side / 2,
+                                         width: side, height: side)
+            ring.gradient.type = .conic
+            ring.gradient.colors = GlowView.palette
+            ring.gradient.startPoint = CGPoint(x: 0.5, y: 0.5)
+            ring.gradient.endPoint = CGPoint(x: 0.5, y: 0.0)
+            ring.clip.addSublayer(ring.gradient)
+
+            ring.mask.frame = bounds
+            ring.mask.path = outline
+            ring.mask.fillColor = NSColor.clear.cgColor
+            ring.mask.strokeColor = NSColor.white.cgColor  // маска использует альфу
+            ring.mask.lineWidth = w
+            ring.mask.lineCap = .round
+            ring.mask.lineJoin = .round
+            ring.clip.mask = ring.mask
+
+            host.addSublayer(ring.clip)
+            rings.append(ring)
+
+            // Все кольца вращаются синхронно → цвета совпадают, сияние цельное.
+            let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+            spin.fromValue = 0
+            spin.toValue = CGFloat.pi * 2
+            spin.duration = 11
+            spin.repeatCount = .infinity
+            ring.gradient.add(spin, forKey: "spin")
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -136,38 +179,9 @@ final class GlowView: NSView {
         super.viewDidMoveToWindow()
         guard window != nil, link == nil else { return }
         let l = displayLink(target: self, selector: #selector(tick(_:)))
-        l.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        l.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
         l.add(to: .main, forMode: .common)
         link = l
-    }
-
-    private func makeStack(key: String, clockwise: Bool) -> GlowStack {
-        let s = GlowStack(key: key)
-        s.clip.frame = bounds
-        s.clip.masksToBounds = false
-
-        // Конический градиент — большой квадрат с центром в центре выреза,
-        // чтобы цвета «оборачивались» вокруг него при вращении.
-        let side = max(bounds.width, bounds.height) * 1.6
-        let c = CGPoint(x: notchLocal.midX, y: notchLocal.midY)
-        s.gradient.frame = CGRect(x: c.x - side / 2, y: c.y - side / 2, width: side, height: side)
-        s.gradient.type = .conic
-        s.gradient.colors = GlowView.palette
-        s.gradient.startPoint = CGPoint(x: 0.5, y: 0.5)
-        s.gradient.endPoint = CGPoint(x: 0.5, y: 0.0)
-        s.clip.addSublayer(s.gradient)
-
-        // Маска-обводка задаёт форму свечения (U вокруг выреза).
-        s.mask.frame = bounds
-        s.mask.path = notchOutline(notchLocal, radius: min(notchLocal.height, notchLocal.width / 2) * 0.7)
-        s.mask.fillColor = NSColor.clear.cgColor
-        s.mask.strokeColor = NSColor.white.cgColor  // маска использует альфу
-        s.mask.lineWidth = 6
-        s.mask.lineCap = .round
-        s.clip.mask = s.mask
-
-        s.clip.filters = [s.blur]
-        return s
     }
 
     /// Контур выреза: открытая «U» — по левой стороне вниз, скруглённый низ,
@@ -184,15 +198,6 @@ final class GlowView: NSView {
         return p
     }
 
-    private func startRotation(_ s: GlowStack, duration: CFTimeInterval, reverse: Bool) {
-        let a = CABasicAnimation(keyPath: "transform.rotation.z")
-        a.fromValue = reverse ? CGFloat.pi * 2 : 0
-        a.toValue = reverse ? 0 : CGFloat.pi * 2
-        a.duration = duration
-        a.repeatCount = .infinity
-        s.gradient.add(a, forKey: "spin")
-    }
-
     @objc private func tick(_ link: CADisplayLink) {
         // Реальное время кадра, чтобы «дыхание» шло одинаково при 60 и 120 Гц.
         breath += CGFloat(link.duration > 0 ? link.duration : 1.0 / 60.0)
@@ -203,20 +208,25 @@ final class GlowView: NSView {
         let e = max(v, pulse)
         let g = pow(e, 0.6)
 
+        // Ширина всех колец растёт с голосом (сияние разливается наружу),
+        // яркость — тоже: тускло в покое, вспышка на речи.
+        let widthScale = 0.6 + g * 2.2          // покой ~0.6×, пик ~2.8×
+        let bright = Float(0.28 + g * 0.72)     // общий множитель прозрачности
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-
-        // Толщина обводки скачет широко: тонкая нить в покое → жирная лента на голосе.
-        core.mask.lineWidth = 2 + g * 22
-        halo.mask.lineWidth = 10 + g * 70
-        // Больше размытия в целом — мягкое сияние, на пиках разливается ещё сильнее.
-        core.clip.setValue(4 + g * 8, forKeyPath: "filters.coreBlur.inputRadius")
-        halo.clip.setValue(18 + g * 44, forKeyPath: "filters.haloBlur.inputRadius")
-        // Яркость тоже прыгает: приглушено в покое, вспыхивает на речи.
-        core.clip.opacity = Float(0.35 + g * 0.65)
-        halo.clip.opacity = Float(0.18 + g * 0.82)
-
+        for ring in rings {
+            ring.mask.lineWidth = ring.baseWidth * widthScale
+            ring.clip.opacity = ring.baseAlpha * bright
+        }
         CATransaction.commit()
+
+        // Раз в ~2 сек — фактический fps в лог (диагностика частоты кадров).
+        frames += 1
+        if frames % 120 == 0, link.duration > 0 {
+            let fps = Int((1.0 / link.duration).rounded())
+            FileHandle.standardError.write("[assistant] fps≈\(fps)\n".data(using: .utf8)!)
+        }
     }
 }
 
