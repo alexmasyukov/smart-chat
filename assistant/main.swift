@@ -98,27 +98,28 @@ final class GlowView: NSView {
     private var frames = 0
     let mic = MicLevel()
 
-    // Палитра Siri: холодные переливы с тёплым акцентом; массив замкнут для
-    // бесшовного конического градиента.
-    private static let palette: [CGColor] = [
-        NSColor(srgbRed: 0.20, green: 0.85, blue: 1.00, alpha: 1).cgColor,
-        NSColor(srgbRed: 0.30, green: 0.45, blue: 1.00, alpha: 1).cgColor,
-        NSColor(srgbRed: 0.65, green: 0.30, blue: 1.00, alpha: 1).cgColor,
-        NSColor(srgbRed: 1.00, green: 0.30, blue: 0.70, alpha: 1).cgColor,
-        NSColor(srgbRed: 1.00, green: 0.55, blue: 0.30, alpha: 1).cgColor,
-        NSColor(srgbRed: 0.20, green: 0.85, blue: 1.00, alpha: 1).cgColor,
-    ]
+    // Плотное замкнутое кольцо оттенков cyan→blue→purple→magenta→pink→…→cyan.
+    // Много близких стопов вместо шести далёких — переходы между цветами перестают
+    // читаться резкими «границами радуги». Идём по hue туда-обратно (170°→330°→170°),
+    // минуя зелёный/жёлтый, поэтому настроение остаётся холодным (Siri), а первый и
+    // последний цвет совпадают → бесшовный конический градиент.
+    private static let palette: [CGColor] = {
+        let stops = 24
+        return (0..<stops).map { i -> CGColor in
+            let f = Double(i) / Double(stops - 1)          // 0..1
+            let tri = f < 0.5 ? f * 2 : (1 - f) * 2        // 0..1..0 (замыкает кольцо)
+            let hue = (170.0 + tri * 160.0) / 360.0        // 170°..330°
+            return NSColor(hue: CGFloat(hue), saturation: 0.82, brightness: 1.0, alpha: 1).cgColor
+        }
+    }()
 
-    // Кольца от узкого яркого ядра к широкому тусклому ореолу. Суммарный профиль
-    // прозрачности — плавно спадающий, что и читается как «размытие» краёв.
-    private static let spec: [(w: CGFloat, a: Float)] = [
-        (2,  1.00),
-        (7,  0.55),
-        (16, 0.32),
-        (32, 0.18),
-        (58, 0.10),
-        (96, 0.05),
-    ]
+    // Кольца свечения генерируются геометрически: ширина растёт, прозрачность падает
+    // плавно и часто (16 колец) — суммарный радиальный профиль получается гладким,
+    // без видимых ступенек между кольцами. Это и есть «размытие» краёв.
+    private static let spec: [(w: CGFloat, a: Float)] = (0..<16).map { i in
+        (w: CGFloat(2.0 * pow(1.32, Double(i))),           // 2 .. ~128
+         a: Float(0.85 * pow(0.75, Double(i))))            // 0.85 .. ~0.01
+    }
 
     init(frame: NSRect, notchLocal: CGRect) {
         self.notchLocal = notchLocal
