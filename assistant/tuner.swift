@@ -14,7 +14,7 @@ import QuartzCore
 
 // MARK: - Параметры (дефолты = текущий вид main.swift)
 
-struct Params {
+struct Params: Codable {
     var scaleX: CGFloat = 1.0        // ширина обёртки
     var scaleY: CGFloat = 1.0        // высота обёртки
     var outlineWidth: CGFloat = 64   // толщина ореола (макс ширина стека обводок)
@@ -221,6 +221,22 @@ final class Slider: NSView {
         valueLabel.stringValue = String(format: fmt, slider.doubleValue)
         onChange(CGFloat(slider.doubleValue))
     }
+    /// Программно выставить значение (при загрузке шаблона) без вызова onChange.
+    func setValue(_ v: Double) {
+        slider.doubleValue = v
+        valueLabel.stringValue = String(format: fmt, v)
+    }
+}
+
+/// Именованный шаблон настроек, сохраняется на диск.
+struct Preset: Codable { var name: String; var params: Params }
+
+/// Описание одного ползунка + как он читает/пишет поле Params (для загрузки
+/// шаблонов: по нему выставляем и слайдер, и параметр).
+struct Row {
+    let title: String, lo: Double, hi: Double, def: Double, fmt: String, bake: Bool
+    let get: (Params) -> Double
+    let set: (inout Params, Double) -> Void
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -228,6 +244,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var overlayWin: NSWindow!
     var overlay: GlowOverlay!
     let dump = NSTextField(wrappingLabelWithString: "")
+    var sliders: [Slider] = []
+    var presets: [Preset] = []
+    let popup = NSPopUpButton(frame: CGRect(x: 15, y: 0, width: 240, height: 24), pullsDown: false)
+
+    let rows: [Row] = [
+        Row(title: "Ширина обёртки", lo: 0.5, hi: 2.0, def: 1.0, fmt: "%.2f", bake: false,
+            get: { Double($0.scaleX) }, set: { $0.scaleX = $1 }),
+        Row(title: "Высота обёртки", lo: 0.5, hi: 2.0, def: 1.0, fmt: "%.2f", bake: false,
+            get: { Double($0.scaleY) }, set: { $0.scaleY = $1 }),
+        Row(title: "Толщина ореола", lo: 20, hi: 140, def: 64, fmt: "%.0f", bake: true,
+            get: { Double($0.outlineWidth) }, set: { $0.outlineWidth = $1 }),
+        Row(title: "Размытие", lo: 0, hi: 30, def: 5, fmt: "%.0f", bake: true,
+            get: { Double($0.blur) }, set: { $0.blur = $1 }),
+        Row(title: "Скругление углов", lo: 0, hi: 1, def: 0.7, fmt: "%.2f", bake: true,
+            get: { Double($0.corner) }, set: { $0.corner = $1 }),
+        Row(title: "Спад к краю", lo: 0.5, hi: 3, def: 1.5, fmt: "%.2f", bake: true,
+            get: { Double($0.falloff) }, set: { $0.falloff = $1 }),
+        Row(title: "Насыщенность", lo: 0.5, hi: 2.0, def: 1.4, fmt: "%.2f", bake: true,
+            get: { Double($0.saturation) }, set: { $0.saturation = $1 }),
+        Row(title: "Яркость цвета", lo: 0.4, hi: 1.0, def: 1.0, fmt: "%.2f", bake: true,
+            get: { Double($0.brightness) }, set: { $0.brightness = $1 }),
+        Row(title: "Период вращения, с", lo: 2, hi: 30, def: 9, fmt: "%.1f", bake: false,
+            get: { Double($0.rotSec) }, set: { $0.rotSec = $1 }),
+        Row(title: "Размах на голос", lo: 0, hi: 2.5, def: 0.7, fmt: "%.2f", bake: false,
+            get: { Double($0.voiceScale) }, set: { $0.voiceScale = $1 }),
+        Row(title: "Прозрачность покоя", lo: 0, hi: 1, def: 0.85, fmt: "%.2f", bake: false,
+            get: { Double($0.idleOpacity) }, set: { $0.idleOpacity = Float($1) }),
+        Row(title: "Прирост прозрачности", lo: 0, hi: 1, def: 0.15, fmt: "%.2f", bake: false,
+            get: { Double($0.voiceOpacity) }, set: { $0.voiceOpacity = Float($1) }),
+        Row(title: "Attack (рост)", lo: 0.05, hi: 1, def: 0.28, fmt: "%.2f", bake: false,
+            get: { Double($0.attack) }, set: { $0.attack = Float($1) }),
+        Row(title: "Release (спад)", lo: 0.05, hi: 1, def: 0.16, fmt: "%.2f", bake: false,
+            get: { Double($0.release) }, set: { $0.release = Float($1) }),
+        Row(title: "Gamma (контраст)", lo: 0.4, hi: 2.5, def: 1.1, fmt: "%.2f", bake: false,
+            get: { Double($0.gamma) }, set: { $0.gamma = Float($1) }),
+        Row(title: "Чувствительность", lo: 0.5, hi: 2.0, def: 1.0, fmt: "%.2f", bake: false,
+            get: { Double($0.sensitivity) }, set: { $0.sensitivity = Float($1) }),
+    ]
+
+    // MARK: пресеты на диске (~/Library/Application Support/AssistantTuner/presets.json)
+    private func presetsURL() -> URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("AssistantTuner", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("presets.json")
+    }
+    private func loadPresets() {
+        guard let data = try? Data(contentsOf: presetsURL()),
+              let list = try? JSONDecoder().decode([Preset].self, from: data) else { return }
+        presets = list
+    }
+    private func savePresetsToDisk() {
+        if let data = try? JSONEncoder().encode(presets) {
+            try? data.write(to: presetsURL())
+        }
+    }
 
     func notchRect(on s: NSScreen) -> CGRect {
         let f = s.frame; let top = s.safeAreaInsets.top
@@ -256,6 +328,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlayWin.orderFrontRegardless()
         overlay.startLink()
 
+        loadPresets()
         buildPanel()
 
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] ok in
@@ -264,34 +337,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func buildPanel() {
-        let rows: [(String, Double, Double, Double, String, (CGFloat) -> Void)] = [
-            ("Ширина обёртки", 0.5, 2.0, 1.0, "%.2f",   { self.overlay.p.scaleX = $0; self.live() }),
-            ("Высота обёртки", 0.5, 2.0, 1.0, "%.2f",   { self.overlay.p.scaleY = $0; self.live() }),
-            ("Толщина ореола", 20, 140, 64, "%.0f",     { self.overlay.p.outlineWidth = $0; self.bake() }),
-            ("Размытие", 0, 30, 5, "%.0f",              { self.overlay.p.blur = $0; self.bake() }),
-            ("Скругление углов", 0, 1, 0.7, "%.2f",     { self.overlay.p.corner = $0; self.bake() }),
-            ("Спад к краю", 0.5, 3, 1.5, "%.2f",        { self.overlay.p.falloff = $0; self.bake() }),
-            ("Насыщенность", 0.5, 2.0, 1.4, "%.2f",     { self.overlay.p.saturation = $0; self.bake() }),
-            ("Яркость цвета", 0.4, 1.0, 1.0, "%.2f",    { self.overlay.p.brightness = $0; self.bake() }),
-            ("Период вращения, с", 2, 30, 9, "%.1f",    { self.overlay.p.rotSec = $0; self.live() }),
-            ("Размах на голос", 0, 2.5, 0.7, "%.2f",    { self.overlay.p.voiceScale = $0; self.live() }),
-            ("Прозрачность покоя", 0, 1, 0.85, "%.2f",  { self.overlay.p.idleOpacity = Float($0); self.live() }),
-            ("Прирост прозрачности", 0, 1, 0.15, "%.2f",{ self.overlay.p.voiceOpacity = Float($0); self.live() }),
-            ("Attack (рост)", 0.05, 1, 0.28, "%.2f",    { self.overlay.p.attack = Float($0); self.live() }),
-            ("Release (спад)", 0.05, 1, 0.16, "%.2f",   { self.overlay.p.release = Float($0); self.live() }),
-            ("Gamma (контраст)", 0.4, 2.5, 1.1, "%.2f", { self.overlay.p.gamma = Float($0); self.live() }),
-            ("Чувствительность", 0.5, 2.0, 1.0, "%.2f", { self.overlay.p.sensitivity = Float($0); self.live() }),
-        ]
-        let top: CGFloat = 30
-        let panelH = top + CGFloat(rows.count) * 26 + 120
-        let container = NSView(frame: CGRect(x: 0, y: 0, width: 440, height: panelH))
-        var y = panelH - top
+        let W: CGFloat = 440
+        let presetH: CGFloat = 40
+        let panelH = presetH + CGFloat(rows.count) * 26 + 120
+        let container = NSView(frame: CGRect(x: 0, y: 0, width: W, height: panelH))
+
+        // Верхний ряд: селект шаблонов + Сохранить + Удалить.
+        popup.target = self; popup.action = #selector(selectPreset)
+        popup.frame = CGRect(x: 15, y: panelH - 32, width: 240, height: 24)
+        let saveBtn = NSButton(title: "Сохранить…", target: self, action: #selector(savePreset))
+        saveBtn.frame = CGRect(x: 262, y: panelH - 33, width: 100, height: 26)
+        let delBtn = NSButton(title: "Удалить", target: self, action: #selector(deletePreset))
+        delBtn.frame = CGRect(x: 364, y: panelH - 33, width: 66, height: 26)
+        container.addSubview(popup); container.addSubview(saveBtn); container.addSubview(delBtn)
+        refreshPopup()
+
+        // Ползунки.
+        var y = panelH - presetH
         for r in rows {
             y -= 26
-            let s = Slider(title: r.0, min: r.1, max: r.2, def: r.3, format: r.4, onChange: r.5)
+            let s = Slider(title: r.title, min: r.lo, max: r.hi, def: r.def, format: r.fmt) { [weak self] v in
+                guard let self else { return }
+                r.set(&self.overlay.p, Double(v))
+                if r.bake { self.bake() } else { self.live() }
+            }
             s.frame.origin = CGPoint(x: 15, y: y)
             container.addSubview(s)
+            sliders.append(s)
         }
+
         // Дамп внизу — копируемый.
         dump.frame = CGRect(x: 15, y: 10, width: 410, height: 96)
         dump.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
@@ -307,6 +381,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.setFrameOrigin(CGPoint(x: 60, y: 120))
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: применение / пресеты
+
+    /// Применить Params ко всем ползункам и к эффекту (при выборе шаблона).
+    private func applyParams(_ p: Params) {
+        overlay.p = p
+        for (i, r) in rows.enumerated() { sliders[i].setValue(r.get(p)) }
+        overlay.rebake()
+        dump.stringValue = p.dump()
+    }
+
+    private func refreshPopup() {
+        popup.removeAllItems()
+        popup.addItem(withTitle: presets.isEmpty ? "— нет шаблонов —" : "— выбрать шаблон —")
+        for pr in presets { popup.addItem(withTitle: pr.name) }
+    }
+
+    @objc private func selectPreset() {
+        let idx = popup.indexOfSelectedItem - 1   // 0 — плейсхолдер
+        guard idx >= 0, idx < presets.count else { return }
+        applyParams(presets[idx].params)
+    }
+
+    @objc private func savePreset() {
+        let a = NSAlert()
+        a.messageText = "Сохранить шаблон"
+        a.informativeText = "Имя шаблона (если совпадает — перезапишется):"
+        let tf = NSTextField(frame: CGRect(x: 0, y: 0, width: 240, height: 24))
+        a.accessoryView = tf
+        a.addButton(withTitle: "Сохранить"); a.addButton(withTitle: "Отмена")
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        let name = tf.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        if let i = presets.firstIndex(where: { $0.name == name }) {
+            presets[i].params = overlay.p          // перезапись
+        } else {
+            presets.append(Preset(name: name, params: overlay.p))
+        }
+        savePresetsToDisk()
+        refreshPopup()
+        popup.selectItem(withTitle: name)
+    }
+
+    @objc private func deletePreset() {
+        let idx = popup.indexOfSelectedItem - 1
+        guard idx >= 0, idx < presets.count else { return }
+        presets.remove(at: idx)
+        savePresetsToDisk()
+        refreshPopup()
     }
 
     private func live() { dump.stringValue = overlay.p.dump() }         // без пересборки
