@@ -56,11 +56,11 @@ final class TestView: NSView {
     //   реагирует на голос). По нему видно на глаз, дёргается ли картинка. —
     private let ref = CAGradientLayer()
 
-    // — вид 1: размытый орб —
+    // — вид 1: размытый орб (ЗАПЕЧЁННАЯ текстура, без маски в рантайме) —
     private let orb = CALayer()
-    private let orbGrad = CAGradientLayer()
     private let orbBaseR: CGFloat = 95
     private var orbCenter = CGPoint.zero
+    private var orbAngle: CGFloat = 0
 
     // — вид 2: эквалайзер-бары —
     private var bars: [CALayer] = []
@@ -123,27 +123,50 @@ final class TestView: NSView {
 
     private func buildOrb(host: CALayer, center: CGPoint) {
         orbCenter = center
+        let scale = window?.backingScaleFactor ?? 2
         orb.anchorPoint = CGPoint(x: 0.5, y: 0.5)
         orb.bounds = CGRect(x: 0, y: 0, width: orbBaseR * 2, height: orbBaseR * 2)
         orb.position = center
-        orbGrad.frame = orb.bounds
-        orbGrad.type = .conic
-        orbGrad.colors = TestView.palette
-        orbGrad.startPoint = CGPoint(x: 0.5, y: 0.5)
-        orbGrad.endPoint = CGPoint(x: 0.5, y: 0)
-        orb.addSublayer(orbGrad)
-        let mask = CAGradientLayer()
-        mask.frame = orb.bounds
-        mask.type = .radial
-        mask.colors = [NSColor(white: 1, alpha: 1).cgColor,
-                       NSColor(white: 1, alpha: 1).cgColor,
-                       NSColor(white: 1, alpha: 0).cgColor]
-        mask.locations = [0.0, 0.3, 1.0]
-        mask.startPoint = CGPoint(x: 0.5, y: 0.5)
-        mask.endPoint = CGPoint(x: 1.0, y: 1.0)
-        orb.mask = mask
+        // Радужное свечение с мягкими краями запекается ОДИН раз в текстуру. В
+        // рантайме нет маски → нет offscreen-прохода, масштаб/поворот дёшевы.
+        orb.contents = bakeOrb(diameter: orbBaseR * 2, scale: scale, colors: TestView.palette)
+        orb.contentsScale = scale
         host.addSublayer(orb)
-        spin(orbGrad, duration: 6)
+    }
+
+    /// Запекает конический радужный градиент с радиальным затуханием альфы к краям
+    /// в один CGImage. conic рисуется через render(in:), затем destinationIn с
+    /// радиальным градиентом делает мягкие края.
+    private func bakeOrb(diameter d: CGFloat, scale: CGFloat, colors: [CGColor]) -> CGImage? {
+        let px = Int(d * scale)
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let bi = CGImageAlphaInfo.premultipliedLast.rawValue
+        // 1) конический градиент в bitmap.
+        guard let c1 = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8,
+                                 bytesPerRow: 0, space: cs, bitmapInfo: bi) else { return nil }
+        let conic = CAGradientLayer()
+        conic.frame = CGRect(x: 0, y: 0, width: CGFloat(px), height: CGFloat(px))
+        conic.type = .conic
+        conic.colors = colors
+        conic.startPoint = CGPoint(x: 0.5, y: 0.5)
+        conic.endPoint = CGPoint(x: 0.5, y: 0.0)
+        conic.render(in: c1)
+        guard let conicImg = c1.makeImage() else { return nil }
+        // 2) умножаем на радиальную альфу (мягкие края) через destinationIn.
+        guard let c2 = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8,
+                                 bytesPerRow: 0, space: cs, bitmapInfo: bi) else { return nil }
+        c2.draw(conicImg, in: CGRect(x: 0, y: 0, width: px, height: px))
+        c2.setBlendMode(.destinationIn)
+        let rad = CGGradient(colorsSpace: cs,
+                             colors: [NSColor(white: 1, alpha: 1).cgColor,
+                                      NSColor(white: 1, alpha: 1).cgColor,
+                                      NSColor(white: 1, alpha: 0).cgColor] as CFArray,
+                             locations: [0.0, 0.35, 1.0])!
+        let mid = CGPoint(x: px / 2, y: px / 2)
+        c2.drawRadialGradient(rad, startCenter: mid, startRadius: 0,
+                              endCenter: mid, endRadius: CGFloat(px) / 2,
+                              options: [])
+        return c2.makeImage()
     }
 
     // MARK: вид 2 — эквалайзер: столбики, высота по голосу
@@ -221,9 +244,12 @@ final class TestView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
 
-        // Вид 1: орб — раздувается и ярчает.
+        // Вид 1: орб — вращаем и масштабируем ГОТОВУЮ текстуру (без маски).
+        orbAngle += .pi * 2 * CGFloat(link.duration > 0 ? link.duration : 1.0 / 120.0) / 6
         let s = CGFloat(0.7 + CGFloat(g) * 1.3)
-        orb.transform = CATransform3DMakeScale(s, s, 1)
+        var m = CATransform3DMakeScale(s, s, 1)
+        m = CATransform3DRotate(m, orbAngle, 0, 0, 1)
+        orb.transform = m
         orb.opacity = Float(0.55 + g * 0.45)
 
         // Вид 2: бары — высота по голосу, каждый со своей «дрожью» для живости.
