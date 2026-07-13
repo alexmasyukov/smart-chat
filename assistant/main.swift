@@ -91,21 +91,23 @@ func notchRect(on screen: NSScreen) -> CGRect {
 final class GlowView: NSView {
     let mic = MicLevel()
     private var notchLocal: CGRect
-    private let orb = CALayer()
+    private let orb = CALayer()               // контейнер: маска-форма + масштаб
+    private let conic = CAGradientLayer()     // радужный градиент; вращается (перелив)
     private var link: CADisplayLink?
     private var animating = false
     private var lastVoice = CACurrentMediaTime()
     private let holdTime = 0.7
+    private var orbAngle: CGFloat = 0
     private var dispLevel: Float = 0
 
-    // Палитра (2-й коммит): холодные тона + тёплый оранжевый акцент.
+    // Насыщенная палитра: чистые яркие тона + тёплый оранжевый акцент.
     private static let palette: [CGColor] = [
-        NSColor(srgbRed: 0.20, green: 0.85, blue: 1.00, alpha: 1).cgColor,
-        NSColor(srgbRed: 0.30, green: 0.45, blue: 1.00, alpha: 1).cgColor,
-        NSColor(srgbRed: 0.65, green: 0.30, blue: 1.00, alpha: 1).cgColor,
-        NSColor(srgbRed: 1.00, green: 0.30, blue: 0.70, alpha: 1).cgColor,
-        NSColor(srgbRed: 1.00, green: 0.55, blue: 0.30, alpha: 1).cgColor,
-        NSColor(srgbRed: 0.20, green: 0.85, blue: 1.00, alpha: 1).cgColor,
+        NSColor(srgbRed: 0.00, green: 0.90, blue: 1.00, alpha: 1).cgColor,  // cyan
+        NSColor(srgbRed: 0.15, green: 0.35, blue: 1.00, alpha: 1).cgColor,  // blue
+        NSColor(srgbRed: 0.60, green: 0.15, blue: 1.00, alpha: 1).cgColor,  // purple
+        NSColor(srgbRed: 1.00, green: 0.10, blue: 0.65, alpha: 1).cgColor,  // magenta
+        NSColor(srgbRed: 1.00, green: 0.50, blue: 0.10, alpha: 1).cgColor,  // orange
+        NSColor(srgbRed: 0.00, green: 0.90, blue: 1.00, alpha: 1).cgColor,  // cyan (замыкание)
     ]
 
     init(frame: NSRect, notchLocal: CGRect) {
@@ -118,16 +120,34 @@ final class GlowView: NSView {
 
         let scale = window?.backingScaleFactor ?? 2
         let center = CGPoint(x: notchLocal.midX, y: notchLocal.midY)   // центр выреза
-        // Слой размером с окно; якорь в центре выреза, чтобы масштаб раздувал
-        // свечение НАРУЖУ от выреза (а не от центра окна).
+
+        // Радужный конический слой — большой квадрат с центром в вырезе; ВРАЩАЕТСЯ
+        // (перелив цветов). Насыщенная палитра.
+        let side = max(bounds.width, bounds.height) * 1.8
+        conic.frame = CGRect(x: center.x - side / 2, y: center.y - side / 2,
+                             width: side, height: side)
+        conic.type = .conic
+        conic.colors = GlowView.palette
+        conic.startPoint = CGPoint(x: 0.5, y: 0.5)
+        conic.endPoint = CGPoint(x: 0.5, y: 0.0)
+
+        // Контейнер размером с окно, якорь в центре выреза (масштаб раздувает
+        // свечение наружу). Маска — ЗАПЕЧЁННАЯ размытая обводка выреза: форма стоит
+        // на месте, а под ней крутится радуга → цвета переливаются, вырез обёрнут.
         orb.bounds = CGRect(origin: .zero, size: bounds.size)
         orb.anchorPoint = CGPoint(x: center.x / bounds.width, y: center.y / bounds.height)
         orb.position = center
+        orb.addSublayer(conic)
         let outline = notchOutline(notchLocal,
                                    radius: min(notchLocal.height, notchLocal.width / 2) * 0.7)
-        orb.contents = bakeNotchGlow(size: bounds.size, scale: scale, outline: outline,
-                                     lineWidth: 12, blur: 20, colors: GlowView.palette)
-        orb.contentsScale = scale
+        if let maskImg = bakeMask(size: bounds.size, scale: scale, outline: outline,
+                                  lineWidth: 12, blur: 20) {
+            let m = CALayer()
+            m.frame = bounds
+            m.contentsScale = scale
+            m.contents = maskImg
+            orb.mask = m
+        }
         host.addSublayer(orb)
     }
 
@@ -147,28 +167,14 @@ final class GlowView: NSView {
         return p
     }
 
-    /// Запекает радужное свечение ВОКРУГ выреза: конический градиент, обрезанный
-    /// размытой обводкой контура выреза. Один раз в текстуру — в рантайме только
-    /// масштаб/яркость (без маски, без offscreen-прохода).
-    private func bakeNotchGlow(size: CGSize, scale: CGFloat, outline: CGPath,
-                               lineWidth: CGFloat, blur: CGFloat, colors: [CGColor]) -> CGImage? {
+    /// Запекает размытую обводку контура выреза (белая альфа) ОДИН раз — она служит
+    /// статичной маской-формой, под которой крутится радуга.
+    private func bakeMask(size: CGSize, scale: CGFloat, outline: CGPath,
+                          lineWidth: CGFloat, blur: CGFloat) -> CGImage? {
         let W = Int(size.width * scale), H = Int(size.height * scale)
+        guard W > 0, H > 0 else { return nil }
         let cs = CGColorSpaceCreateDeviceRGB()
         let bi = CGImageAlphaInfo.premultipliedLast.rawValue
-        guard W > 0, H > 0 else { return nil }
-        // 1) конический радужный градиент на весь размер окна.
-        guard let c1 = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8,
-                                 bytesPerRow: 0, space: cs, bitmapInfo: bi) else { return nil }
-        c1.scaleBy(x: scale, y: scale)
-        let conic = CAGradientLayer()
-        conic.frame = CGRect(origin: .zero, size: size)
-        conic.type = .conic
-        conic.colors = colors
-        conic.startPoint = CGPoint(x: 0.5, y: 0.5)
-        conic.endPoint = CGPoint(x: 0.5, y: 0.0)
-        conic.render(in: c1)
-        guard let conicImg = c1.makeImage() else { return nil }
-        // 2) размытая обводка контура выреза как альфа-маска (гаусс один раз).
         guard let cm = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8,
                                  bytesPerRow: 0, space: cs, bitmapInfo: bi) else { return nil }
         cm.scaleBy(x: scale, y: scale)
@@ -180,16 +186,8 @@ final class GlowView: NSView {
         let ci = CIImage(cgImage: strokeImg)
         let blurred = ci.clampedToExtent()
             .applyingGaussianBlur(sigma: Double(blur * scale)).cropped(to: ci.extent)
-        guard let maskImg = CIContext(options: [.useSoftwareRenderer: false])
-            .createCGImage(blurred, from: ci.extent) else { return nil }
-        // 3) conic * maskAlpha → радужное размытое свечение по контуру выреза.
-        guard let c2 = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8,
-                                 bytesPerRow: 0, space: cs, bitmapInfo: bi) else { return nil }
-        let full = CGRect(x: 0, y: 0, width: W, height: H)
-        c2.draw(conicImg, in: full)
-        c2.setBlendMode(.destinationIn)
-        c2.draw(maskImg, in: full)
-        return c2.makeImage()
+        return CIContext(options: [.useSoftwareRenderer: false])
+            .createCGImage(blurred, from: ci.extent)
     }
 
     // MARK: сон/пробуждение
@@ -219,14 +217,18 @@ final class GlowView: NSView {
         if now - lastVoice > holdTime { sleep(); return }
 
         // Сглаживаем уровень КАЖДЫЙ кадр (аудио обновляется реже рендера) — рост
-        // без ступенек. Без вращения — иначе форма-обёртка выреза исказилась бы.
+        // без ступенек.
         let target = mic.level
         let k: Float = target > dispLevel ? 0.28 : 0.16
         dispLevel += (target - dispLevel) * k
         let g = powf(dispLevel, 1.1)
+        // Радуга крутится под статичной маской-формой — цвета переливаются, форма
+        // выреза стоит на месте. Оборот за 9с.
+        orbAngle += .pi * 2 * CGFloat(link.duration > 0 ? link.duration : 1.0 / 120.0) / 9
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        conic.transform = CATransform3DMakeRotation(orbAngle, 0, 0, 1)
         // В покое обводка облегает вырез (scale 1), на голосе свечение разрастается
         // наружу от выреза и ярчает.
         let s = CGFloat(1.0 + CGFloat(g) * 0.7)
