@@ -67,8 +67,8 @@ final class TestView: NSView {
     private var barBaseY: CGFloat = 0
     private let barMaxH: CGFloat = 190
 
-    // — вид 3: пульсирующие кольца —
-    private var rings: [CAShapeLayer] = []
+    // — вид 3: пульсирующие кольца (ЗАПЕЧЁННАЯ текстура кольца, без CAShapeLayer) —
+    private var rings: [CALayer] = []
     private var ringCenter = CGPoint.zero
 
     // измерение fps
@@ -163,9 +163,11 @@ final class TestView: NSView {
                                       NSColor(white: 1, alpha: 0).cgColor] as CFArray,
                              locations: [0.0, 0.35, 1.0])!
         let mid = CGPoint(x: px / 2, y: px / 2)
+        // .drawsAfterEndLocation — за радиусом продолжается clear (alpha 0), иначе
+        // углы квадратной текстуры остаются непрозрачными (торчащие «огранки»).
         c2.drawRadialGradient(rad, startCenter: mid, startRadius: 0,
                               endCenter: mid, endRadius: CGFloat(px) / 2,
-                              options: [])
+                              options: [.drawsAfterEndLocation])
         return c2.makeImage()
     }
 
@@ -194,21 +196,55 @@ final class TestView: NSView {
 
     private func buildRings(host: CALayer, center: CGPoint) {
         ringCenter = center
-        let baseR: CGFloat = 45
+        let scale = window?.backingScaleFactor ?? 2
+        // Кольцо-обводку запекаем ОДИН раз; 4 слоя разного размера дают концентрику,
+        // а голос масштабирует готовую текстуру (без CAShapeLayer / offscreen).
+        let tex = bakeRing(diameter: 200, scale: scale, colors: TestView.palette)
         for i in 0..<4 {
-            let ring = CAShapeLayer()
-            let box: CGFloat = 320
-            ring.bounds = CGRect(x: 0, y: 0, width: box, height: box)
+            let ring = CALayer()
+            let d = 120 + CGFloat(i) * 44
+            ring.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            ring.bounds = CGRect(x: 0, y: 0, width: d, height: d)
             ring.position = center
-            let r = baseR + CGFloat(i) * 6
-            ring.path = CGPath(ellipseIn: CGRect(x: box/2 - r, y: box/2 - r, width: r*2, height: r*2), transform: nil)
-            ring.fillColor = NSColor.clear.cgColor
-            ring.strokeColor = TestView.palette[i % TestView.palette.count]
-            ring.lineWidth = 5
+            ring.contents = tex
+            ring.contentsScale = scale
             ring.opacity = 0.2
             host.addSublayer(ring)
             rings.append(ring)
         }
+    }
+
+    /// Запекает радужное кольцо-обводку (conic + кольцевая альфа) в один CGImage.
+    private func bakeRing(diameter d: CGFloat, scale: CGFloat, colors: [CGColor]) -> CGImage? {
+        let px = Int(d * scale)
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let bi = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let c1 = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8,
+                                 bytesPerRow: 0, space: cs, bitmapInfo: bi) else { return nil }
+        let conic = CAGradientLayer()
+        conic.frame = CGRect(x: 0, y: 0, width: CGFloat(px), height: CGFloat(px))
+        conic.type = .conic
+        conic.colors = colors
+        conic.startPoint = CGPoint(x: 0.5, y: 0.5)
+        conic.endPoint = CGPoint(x: 0.5, y: 0.0)
+        conic.render(in: c1)
+        guard let conicImg = c1.makeImage() else { return nil }
+        guard let c2 = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8,
+                                 bytesPerRow: 0, space: cs, bitmapInfo: bi) else { return nil }
+        c2.draw(conicImg, in: CGRect(x: 0, y: 0, width: px, height: px))
+        c2.setBlendMode(.destinationIn)
+        // Кольцевая альфа: прозрачно в центре и снаружи, непрозрачно у края (обводка).
+        let rad = CGGradient(colorsSpace: cs,
+                             colors: [NSColor(white: 1, alpha: 0).cgColor,
+                                      NSColor(white: 1, alpha: 0).cgColor,
+                                      NSColor(white: 1, alpha: 1).cgColor,
+                                      NSColor(white: 1, alpha: 0).cgColor] as CFArray,
+                             locations: [0.0, 0.68, 0.86, 1.0])!
+        let mid = CGPoint(x: px / 2, y: px / 2)
+        c2.drawRadialGradient(rad, startCenter: mid, startRadius: 0,
+                              endCenter: mid, endRadius: CGFloat(px) / 2,
+                              options: [.drawsAfterEndLocation])
+        return c2.makeImage()
     }
 
     private func spin(_ l: CALayer, duration: CFTimeInterval) {
