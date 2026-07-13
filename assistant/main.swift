@@ -284,7 +284,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let n = notchRect(on: screen)
         // Окно туго вокруг выреза + запас под свечение (меньше площадь — дешевле
         // композитинг). Вверх некуда — вырез у самого края экрана.
-        let mx: CGFloat = 170, my: CGFloat = 150
+        // Запас вокруг выреза под свечение. Уменьшен, но с расчётом: при max scale
+        // (~1.7) ореол уходит наружу до ~210px от центра выреза — окно должно это
+        // вместить, иначе обёртка обрежется.
+        let mx: CGFloat = 140, my: CGFloat = 120
         let frame = CGRect(x: n.minX - mx, y: n.minY - my,
                            width: n.width + 2 * mx, height: n.height + my)
 
