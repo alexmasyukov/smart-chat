@@ -1,7 +1,5 @@
 Assistant.app/
-Form.app/
+Tuner.app/
 Fpstest.app/
-out.log
-form.log
-fpstest.log
+Form.app/
 *.log
