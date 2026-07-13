@@ -87,17 +87,12 @@ final class TestView: NSView {
         wantsLayer = true
         host.backgroundColor = NSColor.clear.cgColor
 
-        buildRef(host: host, center: CGPoint(x: 90, y: frame.height - 150), r: 44)
-        buildOrb(host: host, center: CGPoint(x: frame.width * 0.20, y: frame.midY))
-        buildBars(host: host, center: CGPoint(x: frame.midX, y: frame.midY))
-        buildRings(host: host, center: CGPoint(x: frame.width * 0.80, y: frame.midY))
-
-        label.frame = CGRect(x: 20, y: frame.height - 70, width: frame.width - 40, height: 40)
-        label.fontSize = 26
-        label.foregroundColor = NSColor.white.cgColor
-        label.string = "измерение…"
-        label.contentsScale = 2
-        host.addSublayer(label)
+        // Орб перенесён в основное приложение (вокруг выреза). Здесь — бары и
+        // кольца, разнесённые по ширине, чтобы кольца при разбегании не залезали
+        // на бары. Эталон-спиннер — в углу.
+        buildRef(host: host, center: CGPoint(x: 80, y: frame.height - 100), r: 40)
+        buildBars(host: host, center: CGPoint(x: frame.width * 0.28, y: frame.midY))
+        buildRings(host: host, center: CGPoint(x: frame.width * 0.72, y: frame.midY))
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -288,14 +283,6 @@ final class TestView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
 
-        // Вид 1: орб — вращаем и масштабируем ГОТОВУЮ текстуру (без маски).
-        orbAngle += .pi * 2 * CGFloat(link.duration > 0 ? link.duration : 1.0 / 120.0) / 6
-        let s = CGFloat(0.7 + CGFloat(g) * 1.3)
-        var m = CATransform3DMakeScale(s, s, 1)
-        m = CATransform3DRotate(m, orbAngle, 0, 0, 1)
-        orb.transform = m
-        orb.opacity = Float(0.55 + g * 0.45)
-
         // Вид 2: бары — высота по голосу, каждый со своей «дрожью» для живости.
         let n = bars.count
         for (i, bar) in bars.enumerated() {
@@ -318,9 +305,6 @@ final class TestView: NSView {
 
         if cnt >= 20 {
             let fps = Double(cnt) / acc
-            let maxHz = window?.screen?.maximumFramesPerSecond ?? 0
-            label.string = String(format: "дисплей %d Гц   CADisplayLink %.0f fps   джиттер %.1f мс",
-                                   maxHz, fps, (maxDt - minDt) * 1000)
             FileHandle.standardError.write(String(format: "[fpstest] fps=%.1f max=%.2fms\n",
                                                   fps, maxDt * 1000).data(using: .utf8)!)
             acc = 0; cnt = 0; minDt = 999; maxDt = 0
@@ -337,7 +321,8 @@ final class D: NSObject, NSApplicationDelegate {
         let overlay = ProcessInfo.processInfo.environment["OVERLAY"] == "1"
         if overlay {
             let scr = NSScreen.main!.frame
-            let f = CGRect(x: scr.midX - 450, y: scr.maxY - 520, width: 900, height: 520)
+            let fw: CGFloat = min(scr.width - 80, 1500), fh: CGFloat = 720
+            let f = CGRect(x: scr.midX - fw / 2, y: scr.maxY - fh, width: fw, height: fh)
             view = TestView(frame: NSRect(origin: .zero, size: f.size))
             w = NSWindow(contentRect: f, styleMask: [.borderless], backing: .buffered, defer: false)
             w.isOpaque = false

@@ -82,41 +82,33 @@ func notchRect(on screen: NSScreen) -> CGRect {
     return CGRect(x: f.midX - w / 2, y: f.maxY - h, width: w, height: h)
 }
 
-// MARK: - Вид: свечение на Core Animation (без Metal)
+// MARK: - Вид: орб по центру выреза (Core Animation, без Metal)
 
-// Один «слой свечения»: конический радужный градиент, маскированный ЗАПЕЧЁННОЙ
-// размытой обводкой выреза. Градиент вращается через render-server-анимацию
-// (перелив), маска-картинка статична и уже размыта — мягкие края бесплатно.
-private final class Glow {
-    let holder = CALayer()           // несёт маску-картинку; масштабируется по голосу
-    let gradient = CAGradientLayer() // радужный конический градиент; вращается
-    init() {}
-}
-
+// Радужный орб с мягкими краями ЗАПЕЧЁН один раз в текстуру (conic + радиальное
+// затухание альфы). В рантайме только вращаем/масштабируем готовую текстуру —
+// никакой маски и offscreen-прохода, поэтому 120 Гц плавно даже при увеличении.
+// Голос раздувает орб; уровень сглаживается НА КАЖДОМ кадре (не ступеньками).
 final class GlowView: NSView {
     let mic = MicLevel()
     private var notchLocal: CGRect
-    private var core = Glow()
-    private var halo = Glow()
-    private var animating = false
+    private let orb = CALayer()
+    private let orbR: CGFloat = 105
     private var link: CADisplayLink?
+    private var animating = false
     private var lastVoice = CACurrentMediaTime()
-    private let holdTime = 0.7        // сколько ещё анимировать после тишины
-    private var angleCore: CGFloat = 0
-    private var angleHalo: CGFloat = 0
+    private let holdTime = 0.7
+    private var orbAngle: CGFloat = 0
+    private var dispLevel: Float = 0
 
-    // Плотное замкнутое кольцо оттенков (cyan→blue→purple→magenta→pink→…→cyan):
-    // 24 близких стопа вместо шести далёких → переходы плавные, без «границ радуги».
-    // Идём по hue туда-обратно (170°→330°→170°), минуя зелёный/жёлтый (холодный Siri).
-    private static let palette: [CGColor] = {
-        let stops = 24
-        return (0..<stops).map { i -> CGColor in
-            let f = Double(i) / Double(stops - 1)
-            let tri = f < 0.5 ? f * 2 : (1 - f) * 2
-            let hue = (170.0 + tri * 160.0) / 360.0
-            return NSColor(hue: CGFloat(hue), saturation: 0.82, brightness: 1.0, alpha: 1).cgColor
-        }
-    }()
+    // Палитра (2-й коммит): холодные тона + тёплый оранжевый акцент.
+    private static let palette: [CGColor] = [
+        NSColor(srgbRed: 0.20, green: 0.85, blue: 1.00, alpha: 1).cgColor,
+        NSColor(srgbRed: 0.30, green: 0.45, blue: 1.00, alpha: 1).cgColor,
+        NSColor(srgbRed: 0.65, green: 0.30, blue: 1.00, alpha: 1).cgColor,
+        NSColor(srgbRed: 1.00, green: 0.30, blue: 0.70, alpha: 1).cgColor,
+        NSColor(srgbRed: 1.00, green: 0.55, blue: 0.30, alpha: 1).cgColor,
+        NSColor(srgbRed: 0.20, green: 0.85, blue: 1.00, alpha: 1).cgColor,
+    ]
 
     init(frame: NSRect, notchLocal: CGRect) {
         self.notchLocal = notchLocal
@@ -127,108 +119,59 @@ final class GlowView: NSView {
         host.backgroundColor = NSColor.clear.cgColor
 
         let scale = window?.backingScaleFactor ?? 2
-        let outline = notchOutline(notchLocal,
-                                   radius: min(notchLocal.height, notchLocal.width / 2) * 0.7)
-        let center = CGPoint(x: notchLocal.midX, y: notchLocal.midY)
-
-        // halo — широкое сильно размытое сияние; core — узкая яркая обводка.
-        setup(halo, outlineLineWidth: 22, blur: 34, idleOpacity: 0.35, host: host,
-              center: center, scale: scale, outline: outline)
-        setup(core, outlineLineWidth: 6, blur: 9, idleOpacity: 0.85, host: host,
-              center: center, scale: scale, outline: outline)
+        let center = CGPoint(x: notchLocal.midX, y: notchLocal.midY)   // центр выреза
+        orb.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        orb.bounds = CGRect(x: 0, y: 0, width: orbR * 2, height: orbR * 2)
+        orb.position = center
+        orb.contents = bakeOrb(diameter: orbR * 2, scale: scale, colors: GlowView.palette)
+        orb.contentsScale = scale
+        host.addSublayer(orb)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    private func setup(_ glow: Glow, outlineLineWidth lw: CGFloat, blur: CGFloat,
-                       idleOpacity: Float, host: CALayer, center: CGPoint,
-                       scale: CGFloat, outline: CGPath) {
-        // Конический радужный градиент — квадрат с центром в вырезе, чтобы цвета
-        // «оборачивались» вокруг него при вращении.
-        let side = max(bounds.width, bounds.height) * 1.7
-        glow.gradient.frame = CGRect(x: center.x - side / 2, y: center.y - side / 2,
-                                     width: side, height: side)
-        glow.gradient.type = .conic
-        glow.gradient.colors = GlowView.palette
-        glow.gradient.startPoint = CGPoint(x: 0.5, y: 0.5)
-        glow.gradient.endPoint = CGPoint(x: 0.5, y: 0.0)
-
-        glow.holder.frame = bounds
-        // Масштабируем свечение из центра выреза (голос «раздувает» сияние наружу).
-        glow.holder.anchorPoint = CGPoint(x: center.x / bounds.width,
-                                          y: center.y / bounds.height)
-        glow.holder.position = center
-        glow.holder.opacity = idleOpacity
-        glow.holder.addSublayer(glow.gradient)
-
-        // Маска: ЗАПЕЧЁННАЯ один раз размытая обводка (настоящий гаусс, но не в
-        // рантайме каждый кадр). Даёт мягкие размытые края почти бесплатно.
-        if let img = bakeGlow(size: bounds.size, scale: scale, outline: outline,
-                              lineWidth: lw, blurSigma: blur) {
-            let mask = CALayer()
-            mask.frame = bounds
-            mask.contentsScale = scale
-            mask.contents = img
-            glow.holder.mask = mask
-        }
-        host.addSublayer(glow.holder)
-    }
-
-    /// Контур выреза: открытая «U» — по левой стороне вниз, скруглённый низ,
-    /// по правой стороне вверх. Верхней грани нет (она у самого края экрана).
-    private func notchOutline(_ r: CGRect, radius rad: CGFloat) -> CGPath {
-        let p = CGMutablePath()
-        let x0 = r.minX, x1 = r.maxX, yTop = r.maxY, yBot = r.minY
-        p.move(to: CGPoint(x: x0, y: yTop))
-        p.addArc(tangent1End: CGPoint(x: x0, y: yBot),
-                 tangent2End: CGPoint(x: x0 + rad, y: yBot), radius: rad)
-        p.addArc(tangent1End: CGPoint(x: x1, y: yBot),
-                 tangent2End: CGPoint(x: x1, y: yTop), radius: rad)
-        p.addLine(to: CGPoint(x: x1, y: yTop))
-        return p
-    }
-
-    /// Запекает размытую обводку в CGImage ОДИН раз: рисуем штрих пути, применяем
-    /// гаусс через Core Image единожды. В рантайме фильтр больше не гоняется.
-    private func bakeGlow(size: CGSize, scale: CGFloat, outline: CGPath,
-                          lineWidth: CGFloat, blurSigma: CGFloat) -> CGImage? {
-        let w = Int(size.width * scale), h = Int(size.height * scale)
-        guard w > 0, h > 0,
-              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
-                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        else { return nil }
-        ctx.scaleBy(x: scale, y: scale)
-        ctx.setStrokeColor(CGColor(gray: 1, alpha: 1))
-        ctx.setLineWidth(lineWidth)
-        ctx.setLineCap(.round)
-        ctx.setLineJoin(.round)
-        ctx.addPath(outline)
-        ctx.strokePath()
-        guard let base = ctx.makeImage() else { return nil }
-        let ci = CIImage(cgImage: base)
-        let blurred = ci.clampedToExtent()
-            .applyingGaussianBlur(sigma: Double(blurSigma * scale))
-            .cropped(to: ci.extent)
-        return CIContext(options: [.useSoftwareRenderer: false])
-            .createCGImage(blurred, from: ci.extent)
+    /// Запекает конический радужный градиент с радиальным затуханием альфы в CGImage.
+    private func bakeOrb(diameter d: CGFloat, scale: CGFloat, colors: [CGColor]) -> CGImage? {
+        let px = Int(d * scale)
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let bi = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let c1 = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8,
+                                 bytesPerRow: 0, space: cs, bitmapInfo: bi) else { return nil }
+        let conic = CAGradientLayer()
+        conic.frame = CGRect(x: 0, y: 0, width: CGFloat(px), height: CGFloat(px))
+        conic.type = .conic
+        conic.colors = colors
+        conic.startPoint = CGPoint(x: 0.5, y: 0.5)
+        conic.endPoint = CGPoint(x: 0.5, y: 0.0)
+        conic.render(in: c1)
+        guard let conicImg = c1.makeImage() else { return nil }
+        guard let c2 = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8,
+                                 bytesPerRow: 0, space: cs, bitmapInfo: bi) else { return nil }
+        c2.draw(conicImg, in: CGRect(x: 0, y: 0, width: px, height: px))
+        c2.setBlendMode(.destinationIn)
+        let rad = CGGradient(colorsSpace: cs,
+                             colors: [NSColor(white: 1, alpha: 1).cgColor,
+                                      NSColor(white: 1, alpha: 1).cgColor,
+                                      NSColor(white: 1, alpha: 0).cgColor] as CFArray,
+                             locations: [0.0, 0.35, 1.0])!
+        let mid = CGPoint(x: px / 2, y: px / 2)
+        c2.drawRadialGradient(rad, startCenter: mid, startRadius: 0,
+                              endCenter: mid, endRadius: CGFloat(px) / 2,
+                              options: [.drawsAfterEndLocation])
+        return c2.makeImage()
     }
 
     // MARK: сон/пробуждение
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        // Голос будит спящее свечение (переход на main из аудио-потока).
         mic.onVoice = { [weak self] in
             DispatchQueue.main.async { self?.wake() }
         }
         applyIdle()   // стартуем со статичного покойного кадра
     }
 
-    /// Разбудить: запустить CADisplayLink на 120 Гц. Всю анимацию (перелив +
-    /// реакцию на голос) ведём покадрово синхронно с дисплеем — это доказанно
-    /// плавные 120 на прозрачном окне (проверено fpstest), в отличие от Timer,
-    /// который не привязан к vsync и давал дёрганье.
+    /// Разбудить: CADisplayLink 120 Гц (плавно), в тишине засыпает.
     func wake() {
         lastVoice = CACurrentMediaTime()
         if animating { return }
@@ -237,51 +180,44 @@ final class GlowView: NSView {
         l.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
         l.add(to: .main, forMode: .common)
         link = l
-        FileHandle.standardError.write("[assistant] проснулся (голос)\n".data(using: .utf8)!)
     }
 
     @objc private func tick(_ link: CADisplayLink) {
         let now = CACurrentMediaTime()
-        let lv = mic.level
-        if lv > 0.06 { lastVoice = now }
+        if mic.level > 0.06 { lastVoice = now }
         if now - lastVoice > holdTime { sleep(); return }
 
-        // Угол вращения ведём по реальному времени кадра — оборот за 9с/14с.
-        let dt = CGFloat(link.duration > 0 ? link.duration : 1.0 / 120.0)
-        angleCore += .pi * 2 * dt / 9
-        angleHalo += .pi * 2 * dt / 14
-        let g = powf(max(lv, 0.06), 0.6)
+        // Сглаживаем уровень КАЖДЫЙ кадр (аудио обновляется реже рендера) — рост
+        // без ступенек. Вращаем готовую текстуру.
+        let target = mic.level
+        let k: Float = target > dispLevel ? 0.28 : 0.16
+        dispLevel += (target - dispLevel) * k
+        let g = powf(dispLevel, 1.1)
+        orbAngle += .pi * 2 * CGFloat(link.duration > 0 ? link.duration : 1.0 / 120.0) / 8
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        core.gradient.transform = CATransform3DMakeRotation(angleCore, 0, 0, 1)
-        halo.gradient.transform = CATransform3DMakeRotation(angleHalo, 0, 0, 1)
-        // Голос раздувает свечение наружу и ярчит — резкий «прыжок».
-        let sc = CGFloat(1.0 + g * 1.4)
-        let sh = CGFloat(1.0 + g * 2.0)
-        core.holder.transform = CATransform3DMakeScale(sc, sc, 1)
-        halo.holder.transform = CATransform3DMakeScale(sh, sh, 1)
-        core.holder.opacity = 0.6 + g * 0.4
-        halo.holder.opacity = 0.25 + g * 0.6
+        let s = CGFloat(0.55 + CGFloat(g) * 1.3)
+        var m = CATransform3DMakeScale(s, s, 1)
+        m = CATransform3DRotate(m, orbAngle, 0, 0, 1)
+        orb.transform = m
+        orb.opacity = Float(0.5 + g * 0.5)
         CATransaction.commit()
     }
 
-    /// Уснуть: остановить display link, зафиксировать статичный покойный кадр.
+    /// Уснуть: остановить display link, орб — маленький статичный.
     private func sleep() {
         animating = false
         link?.invalidate(); link = nil
+        dispLevel = 0
         applyIdle()
-        FileHandle.standardError.write("[assistant] уснул (тишина) — анимаций нет\n".data(using: .utf8)!)
     }
 
-    /// Статичное мягкое свечение в покое: без анимаций, WindowServer кеширует.
     private func applyIdle() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        core.holder.transform = CATransform3DIdentity
-        halo.holder.transform = CATransform3DIdentity
-        core.holder.opacity = 0.7
-        halo.holder.opacity = 0.28
+        orb.transform = CATransform3DMakeScale(0.55, 0.55, 1)
+        orb.opacity = 0.5
         CATransaction.commit()
     }
 }
