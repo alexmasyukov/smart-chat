@@ -44,6 +44,9 @@ final class TestView: NSView {
     private let glow = CAGradientLayer()
     private let blurHolder = CALayer()          // размытый кружок рядом
     private let blurGrad = CAGradientLayer()
+    private let blurMask = CAGradientLayer()     // радиальная маска (ссылка для ресайза)
+    private let blurBaseR: CGFloat = 120         // базовый радиус кружка
+    private var blurCenter = CGPoint.zero
     private let label = CATextLayer()
     let mic = MicLevel()
     private var link: CADisplayLink?
@@ -82,26 +85,27 @@ final class TestView: NSView {
         // Размытый кружок РЯДОМ (справа) — тот же конический градиент, но края
         // растворяются радиальной альфа-маской (мягкое размытие) вместо жёсткого
         // cornerRadius-обрезания у левого. Для сравнения края.
-        let bc = CGPoint(x: frame.midX + 300, y: frame.midY)
-        blurHolder.frame = CGRect(x: bc.x - side/2, y: bc.y - side/2, width: side, height: side)
+        blurCenter = CGPoint(x: frame.midX + 300, y: frame.midY)
+        blurHolder.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        blurHolder.bounds = CGRect(x: 0, y: 0, width: blurBaseR * 2, height: blurBaseR * 2)
+        blurHolder.position = blurCenter
         blurGrad.frame = blurHolder.bounds
         blurGrad.type = .conic
         blurGrad.colors = glow.colors
         blurGrad.startPoint = CGPoint(x: 0.5, y: 0.5)
         blurGrad.endPoint = CGPoint(x: 0.5, y: 0)
         blurHolder.addSublayer(blurGrad)
-        let bmask = CAGradientLayer()
-        bmask.frame = blurHolder.bounds
-        bmask.type = .radial
-        bmask.colors = [
+        blurMask.frame = blurHolder.bounds
+        blurMask.type = .radial
+        blurMask.colors = [
             NSColor(white: 1, alpha: 1).cgColor,
             NSColor(white: 1, alpha: 1).cgColor,
             NSColor(white: 1, alpha: 0).cgColor,
         ]
-        bmask.locations = [0.0, 0.3, 1.0]
-        bmask.startPoint = CGPoint(x: 0.5, y: 0.5)
-        bmask.endPoint = CGPoint(x: 1.0, y: 1.0)
-        blurHolder.mask = bmask
+        blurMask.locations = [0.0, 0.3, 1.0]
+        blurMask.startPoint = CGPoint(x: 0.5, y: 0.5)
+        blurMask.endPoint = CGPoint(x: 1.0, y: 1.0)
+        blurHolder.mask = blurMask
         host.addSublayer(blurHolder)
         spin(blurGrad, duration: 6)
 
@@ -176,7 +180,14 @@ final class TestView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         redDot.position = CGPoint(x: x, y: redDot.position.y)
-        blurHolder.transform = CATransform3DMakeScale(s, s, 1)
+        // ТЕСТ: не transform, а РЕАЛЬНЫЙ ресайз слоя — CA перерастеризует конический
+        // градиент и радиальную маску в новый размер каждый кадр (перерисовка).
+        let r = blurBaseR * s
+        let b = CGRect(x: 0, y: 0, width: r * 2, height: r * 2)
+        blurHolder.bounds = b
+        blurHolder.position = blurCenter
+        blurGrad.frame = b
+        blurMask.frame = b
         blurHolder.opacity = Float(0.55 + g * 0.45)
         CATransaction.commit()
 
