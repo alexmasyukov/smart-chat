@@ -1,5 +1,29 @@
 import AppKit
 import QuartzCore
+import AVFoundation
+
+// Микрофон: сглаженный уровень громкости 0..1 (резкий рост, плавный спад).
+final class MicLevel {
+    private let engine = AVAudioEngine()
+    var level: Float = 0
+    func start() {
+        let input = engine.inputNode
+        let fmt = input.inputFormat(forBus: 0)
+        guard fmt.channelCount > 0 else { return }
+        input.installTap(onBus: 0, bufferSize: 1024, format: fmt) { [weak self] buf, _ in
+            guard let self, let ch = buf.floatChannelData?[0] else { return }
+            let n = Int(buf.frameLength); if n == 0 { return }
+            var sum: Float = 0
+            for i in 0..<n { let s = ch[i]; sum += s * s }
+            let db = 20 * log10(max((sum / Float(n)).squareRoot(), 1e-7))
+            var lvl = (db + 52) / 40; lvl = min(max(lvl, 0), 1)
+            let cur = self.level
+            self.level = lvl > cur ? cur + (lvl - cur) * 0.85 : cur + (lvl - cur) * 0.16
+        }
+        try? engine.start()
+        FileHandle.standardError.write("[fpstest] микрофон запущен\n".data(using: .utf8)!)
+    }
+}
 
 // =============================================================================
 // fpstest — диагностика реальной частоты кадров на ОБЫЧНОМ окне (с рамкой,
@@ -19,6 +43,7 @@ final class TestView: NSView {
     private let blurHolder = CALayer()          // размытый кружок рядом
     private let blurGrad = CAGradientLayer()
     private let label = CATextLayer()
+    let mic = MicLevel()
     private var link: CADisplayLink?
 
     // измерение fps
@@ -141,9 +166,15 @@ final class TestView: NSView {
         let phase = ts.truncatingRemainder(dividingBy: period) / period   // 0..1
         let tri = phase < 0.5 ? phase*2 : (1-phase)*2                       // 0..1..0
         let x = 13 + CGFloat(tri) * (bounds.width - 26)
+        // Правый (размытый) кружок реагирует на голос: раздувается и ярчает.
+        let g = powf(mic.level, 0.6)
+        let s = CGFloat(0.8 + g * 1.1)
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         redDot.position = CGPoint(x: x, y: redDot.position.y)
+        blurHolder.transform = CATransform3DMakeScale(s, s, 1)
+        blurHolder.opacity = Float(0.55 + g * 0.45)
         CATransaction.commit()
 
         if cnt >= 20 {
@@ -163,12 +194,14 @@ let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 final class D: NSObject, NSApplicationDelegate {
     var w: NSWindow!
+    var view: TestView!
     func applicationDidFinishLaunching(_ n: Notification) {
-        // OVERLAY=1 — прозрачный borderless оверлей на shielding-уровне (как реальное
-        // приложение), чтобы сравнить джиттер с обычным окном.
-        if ProcessInfo.processInfo.environment["OVERLAY"] == "1" {
+        let overlay = ProcessInfo.processInfo.environment["OVERLAY"] == "1"
+        if overlay {
+            // Прозрачный borderless оверлей вверху, поверх всех окон.
             let scr = NSScreen.main!.frame
             let f = CGRect(x: scr.midX - 450, y: scr.maxY - 520, width: 900, height: 520)
+            view = TestView(frame: NSRect(origin: .zero, size: f.size))
             w = NSWindow(contentRect: f, styleMask: [.borderless], backing: .buffered, defer: false)
             w.isOpaque = false
             w.backgroundColor = .clear
@@ -176,19 +209,23 @@ final class D: NSObject, NSApplicationDelegate {
             w.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()))
             w.ignoresMouseEvents = true
             w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-            w.contentView = TestView(frame: NSRect(origin: .zero, size: f.size))
+            w.contentView = view
             w.orderFrontRegardless()
-            FileHandle.standardError.write("[fpstest] режим OVERLAY (прозрачный borderless)\n".data(using: .utf8)!)
-            return
+        } else {
+            let f = CGRect(x: 200, y: 200, width: 900, height: 520)
+            view = TestView(frame: NSRect(origin: .zero, size: f.size))
+            w = NSWindow(contentRect: f, styleMask: [.titled, .closable, .miniaturizable],
+                         backing: .buffered, defer: false)
+            w.title = "FPS test — обычное окно"
+            w.contentView = view
+            w.center()
+            w.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
         }
-        let f = CGRect(x: 200, y: 200, width: 900, height: 520)
-        w = NSWindow(contentRect: f, styleMask: [.titled, .closable, .miniaturizable],
-                     backing: .buffered, defer: false)
-        w.title = "FPS test — обычное окно"
-        w.contentView = TestView(frame: NSRect(origin: .zero, size: f.size))
-        w.center()
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        // Микрофон — правый (размытый) кружок реагирует на голос.
+        AVCaptureDevice.requestAccess(for: .audio) { [weak self] ok in
+            DispatchQueue.main.async { if ok { self?.view.mic.start() } }
+        }
     }
 }
 let d = D(); app.delegate = d; app.run()

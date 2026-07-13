@@ -1,5 +1,7 @@
 Assistant.app/
 Form.app/
+Fpstest.app/
 out.log
 form.log
+fpstest.log
 *.log
