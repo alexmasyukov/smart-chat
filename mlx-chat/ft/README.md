@@ -65,6 +65,7 @@ cd mlx-chat && ./ft/train.sh
 
 **Проверки:**
 ```bash
+.venv/bin/python ft/test_bert_full.py  # ruBERT по всем наборам + проверка утечки в train
 .venv/bin/python ft/test80.py     # 80 кейсов на дообученной 350M
 .venv/bin/python ft/compare.py    # ruBERT-29M vs LFM-350M на свежих фразах + скорость
 .venv/bin/python ft/eval.py --adapter ft/adapters   # held-out для 350M
@@ -90,5 +91,7 @@ cd mlx-chat && ./ft/train.sh
 - `eval.py` — held-out для 350M (Outlines-грамматика).
 - `test80.py` — 80 кейсов (свободная генерация, как в LM Studio).
 - `compare.py` — ruBERT vs 350M + замер скорости.
+- `test_bert_full.py` — ruBERT по всем трём наборам сразу; сначала проверяет, что
+  каждый набор реально held-out (нет в обучающих данных), потом меряет точность.
 - `data/` — датасет и preview (мелкое, в git идёт).
 - `adapters/`, `fused/`, `bert_model/` — веса (в git НЕ идут).
