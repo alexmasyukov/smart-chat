@@ -71,7 +71,12 @@ def load_templates(path):
 # только правило «после „на ветке“ стоит branch, каким бы словом он ни был».
 # Без них модель запоминает конкретные значения и на «ветке коли» молчит.
 NAMES = ["васи", "пети", "коли", "димы", "саши", "лены", "миши", "юли", "олега",
-         "игоря", "кати", "антона", "макса", "вовы", "жени", "ромы", "стаса"]
+         "игоря", "кати", "антона", "макса", "вовы", "жени", "ромы", "стаса",
+         "паши", "гриши", "толи", "серёги", "артёма", "оли", "иры", "нади",
+         "феди", "бори", "гены", "клима", "яны", "тимура", "марка", "аси",
+         "глеба", "зины", "кирилла", "лёхи", "матвея", "нины", "остапа",
+         "платона", "риты", "севы", "тани", "ульяны", "фимы", "хари", "цезаря",
+         "чарли", "шуры", "эдика", "юры", "яши", "агаты", "богдана", "вали"]
 WORDS = ["логина", "оплаты", "поиска", "хедера", "футера", "таблицы", "формы",
          "корзины", "профиля", "настроек", "графиков", "экспорта", "импорта",
          "фильтров", "модалки", "дашборда", "авторизации", "уведомлений"]
@@ -112,6 +117,28 @@ def tag_words(words, slot):
     return [f"{'B' if i == 0 else 'I'}-{slot}" for i in range(len(words))]
 
 
+# Режем на буквы / цифры / знаки препинания по отдельности. Это принципиально:
+# пока «ARD-2020.» был одним словом, тег у него мог быть только один, и части
+# приходилось доставать регуляркой уже после модели. С такой сегментацией
+# «ARD», «-», «2020», «.» — четыре токена, и модель сама метит их
+# B-ticket / O / B-num / O. Никакой постобработки не нужно.
+#
+# Граница буква/цифра тоже режет: Whisper пишет «ARD2020» слитно, и без этого
+# правила номер не отделить — ровно на этом тест и падал.
+TOKEN_RE = re.compile(r"[^\W\d_]+|\d+|[^\w\s]")
+
+
+def seg(s):
+    """Строка → токены (слова и знаки препинания раздельно)."""
+    return TOKEN_RE.findall(s)
+
+
+def tag_value(s, slot):
+    """Значение слота → (токены, BIO-теги) с той же сегментацией."""
+    toks = seg(s)
+    return toks, tag_words(toks, slot)
+
+
 def ticket_value(slots):
     """Тикет → (words, tags) с РАЗДЕЛЬНЫМИ ticket и num.
 
@@ -122,14 +149,23 @@ def ticket_value(slots):
                      приложение доразберёт (это канонический ID, не текст)
       «7777»       → голый номер без префикса
     """
-    prefix = random.choice(slots["ticket"]).split()
+    prefix = seg(random.choice(slots["ticket"]))
     num = str(random.randint(1, 9999))
     mode = random.random()
-    if mode < 0.62:                       # «ард 7777», «ит дев 204»
+    if mode < 0.58:                       # «ард 7777», «ит дев 204»
         return prefix + [num], tag_words(prefix, "ticket") + ["B-num"]
-    if mode < 0.85 and len(prefix) == 1:  # «ARD-7777» / «ard7777» — одно слово
-        return [prefix[0] + random.choice(["-", "-", "_", ""]) + num], ["B-ticket"]
-    if mode < 0.92:                       # «1987 ITDEV» — номер впереди
+    if mode < 0.80:
+        # «ARD-7777» и слитное «ARD2020»: разделитель — отдельный токен с O,
+        # а слитную форму режет сама сегментация по границе буква/цифра.
+        # В обоих случаях ticket и num размечает модель, разбора после неё нет.
+        sep = random.choice(["-", "-", "_", ""])
+        if sep:
+            return prefix + [sep, num], tag_words(prefix, "ticket") + ["O", "B-num"]
+        return prefix + [num], tag_words(prefix, "ticket") + ["B-num"]
+    if mode < 0.92:
+        # «на ветке 1987 ITDEV» — номер впереди префикса. Форма редкая, но
+        # реальная (есть в живых расшифровках), а на малой доле модель её
+        # теряла: номер уходил в branch вместо num.
         return [num] + prefix, ["B-num"] + tag_words(prefix, "ticket")
     return [num], ["B-num"]               # «на фиче 315»
 
@@ -138,17 +174,15 @@ def expand_slot(slot, slots):
     """Значение слота → (words, tags). branch умеет два режима."""
     if slot == "service":
         # служебное слово («фича-ветку») — тип ветки, а не имя: всегда O
-        value = random.choice(slots["service"]).split()
+        value = seg(random.choice(slots["service"]))
         return value, ["O"] * len(value)
     if slot == "branch":
         # тикет или произвольное имя в одной и той же позиции. Имён чуть
         # больше: они разнообразнее (любое слово), тикеты же однотипны.
         if random.random() < 0.42:
             return ticket_value(slots)
-        value = make_value(random.choice(slots["branch"])).split()
-        return value, tag_words(value, "branch")
-    value = make_value(random.choice(slots[slot])).split()
-    return value, tag_words(value, slot)
+        return tag_value(make_value(random.choice(slots["branch"])), "branch")
+    return tag_value(make_value(random.choice(slots[slot])), slot)
 
 
 def fill(template, slots):
@@ -163,7 +197,7 @@ def fill(template, slots):
             words += value
             tags += vtags
         else:
-            plain = part.split()
+            plain = seg(part)
             words += plain
             tags += ["O"] * len(plain)
     return words, tags
@@ -175,11 +209,11 @@ def autotag_phrase(phrase, targets):
     Ищет вхождения известных target-выражений («в finder»). Только предложные
     формы, поэтому none-фраза «открой браузер» остаётся чистой (там нет «в»).
     """
-    words = phrase.split()
+    words = seg(phrase)
     tags = ["O"] * len(words)
     low = [w.lower() for w in words]
-    for t in sorted(targets, key=lambda x: -len(x.split())):
-        tw = t.lower().split()
+    for t in sorted(targets, key=lambda x: -len(seg(x))):
+        tw = seg(t.lower())
         n = len(tw)
         for i in range(len(low) - n + 1):
             if low[i:i + n] == tw and all(x == "O" for x in tags[i:i + n]):
@@ -199,12 +233,12 @@ def swap_alias(words, tags, alias_bank):
         return words, tags
     low = [w.lower() for w in words]
     # ищем самое длинное вхождение любого алиаса
-    for alias in sorted(alias_bank, key=lambda a: -len(a.split())):
-        aw = alias.lower().split()
+    for alias in sorted(alias_bank, key=lambda a: -len(seg(a))):
+        aw = seg(alias.lower())
         n = len(aw)
         for i in range(len(low) - n + 1):
             if low[i:i + n] == aw and all(t == "O" for t in tags[i:i + n]):
-                new = random.choice(alias_bank).split()
+                new = seg(random.choice(alias_bank))
                 return (words[:i] + new + words[i + n:],
                         tags[:i] + ["O"] * len(new) + tags[i + n:])
     return words, tags
@@ -217,13 +251,18 @@ def punctuate(words, tags):
     точку в конце и запятые внутри. Без этого в обучении модель видит
     «ARD 2020», а в бою получает «ARD 2020.» — и номер отваливается.
     """
-    words = list(words)
+    words, tags = list(words), list(tags)
+    # знак — отдельный токен с тегом O: тогда он не прилипает к значению слота
+    # и «1887.» не превращается в мусорный номер. Снимать точку постфактум не
+    # нужно — модель просто не включает её в span.
     if len(words) > 3 and random.random() < 0.30:
         i = random.randrange(1, len(words) - 1)
         if not (tags[i] == "B-ticket" and i + 1 < len(tags) and tags[i + 1] == "B-num"):
-            words[i] += ","
+            words.insert(i + 1, ",")
+            tags.insert(i + 1, "O")
     if random.random() < 0.65:
-        words[-1] += random.choice([".", ".", ".", "?", "!"])
+        words.append(random.choice([".", ".", ".", "?", "!"]))
+        tags.append("O")
     return words, tags
 
 
@@ -250,12 +289,15 @@ def augment(words, tags):
             words.insert(i, random.choice(gd.FILLERS))
             tags.insert(i, "O")
 
-    # опечатка — только по не-слотовым словам
+    # опечатка — только по не-слотовым словам, и только если она не рвёт
+    # токен надвое (gd.typo может подставить дефис, а он теперь разделитель)
     if random.random() < 0.4:
         plain = [i for i, t in enumerate(tags) if t == "O" and len(words[i]) >= 4]
         if plain:
             i = random.choice(plain)
-            words[i] = gd.typo(words[i])
+            cand = gd.typo(words[i])
+            if len(seg(cand)) == 1:
+                words[i] = cand
 
     # регистр — по всей фразе (границы слов не меняются, теги валидны)
     text = gd.recase(" ".join(words))

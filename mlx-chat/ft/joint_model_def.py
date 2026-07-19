@@ -29,20 +29,24 @@ INTENTS = ["open_adsw", "open_network", "open_components", "open_projects", "non
 SLOTS = ["ticket", "num", "branch", "target"]
 TAGS = ["O"] + [f"{p}-{s}" for s in SLOTS for p in ("B", "I")]
 
-# «ARD-7777» пишется одним словом — на уровне слов его не разделить, поэтому
-# модель метит его как ticket, а здесь разбираем на части. Это разбор
-# канонического идентификатора, а не извлечение параметра из живой речи.
-#
-# Хвостовая пунктуация обязательна: на вход идёт расшифровка Whisper, а он
-# почти всегда ставит точку в конце — «ARD2020.» должен разбираться так же.
-# Внутренний дефис («ит-дев-204») тоже допускаем: префикс может быть составным.
-PUNCT = ".,!?;:…"
-ID_RE = re.compile(r"^([A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё-]*?)[-_ ]?(\d+)$")
+# Режем текст на слова И знаки препинания по отдельности — ровно так же, как
+# при обучении (gen_slots.seg). Благодаря этому разбор целиком делает модель:
+# «ARD-2020.» → токены «ARD», «-», «2020», «.», которым она сама ставит
+# B-ticket / O / B-num / O. Ни регулярки для разбора ID, ни снятия точки после
+# модели не нужно — их тут раньше и не было бы, режь мы текст так с самого
+# начала.
+# Граница буква/цифра тоже режет: Whisper пишет «ARD2020» слитно.
+TOKEN_RE = re.compile(r"[^\W\d_]+|\d+|[^\w\s]")
 
 
-def strip_punct(s):
-    """Убирает пунктуацию с краёв значения слота: «1887.» → «1887»."""
-    return s.strip(PUNCT + " ")
+def segment(text):
+    """Строка → [(токен, начало, конец)] с позициями в исходной строке.
+
+    Позиции нужны, чтобы собрать значение слота срезом ИСХОДНОГО текста:
+    «feature/new-header» разбирается на пять токенов, а склеивать их обратно
+    вручную — значит гадать, где были пробелы. Срез по offsets точен всегда.
+    """
+    return [(m.group(), m.start(), m.end()) for m in TOKEN_RE.finditer(text)]
 
 
 class JointClassifier(nn.Module):
@@ -92,11 +96,12 @@ def predict(model, tok, cfg, text, device="cpu"):
 
     Тег слова берём с первого subword: у хвоста при обучении стоит -100.
     """
-    words = text.split()
-    if not words:
+    segs = segment(text)
+    if not segs:
         return cfg["intents"][-1], {}, 1.0
+    words = [s[0] for s in segs]
     enc = tok([words], is_split_into_words=True, truncation=True,
-              max_length=32, return_tensors="pt")
+              max_length=48, return_tensors="pt")
     word_ids = enc.word_ids(0)
     feed = {k: v.to(device) for k, v in enc.items()}
     intent_logits, slot_logits = model(feed["input_ids"], feed["attention_mask"])
@@ -113,31 +118,24 @@ def predict(model, tok, cfg, text, device="cpu"):
             word_tags[wid] = cfg["tags"][tid]
         prev = wid
 
-    # BIO-склейка по словам
-    slots, cur, buf = {}, None, []
-    for i in range(len(words)):
+    # BIO-склейка: значение слота — срез исходного текста от начала первого
+    # токена до конца последнего, поэтому «feature/new-header» собирается
+    # ровно как написано, без догадок о пробелах.
+    slots, cur, start, end = {}, None, 0, 0
+    for i, (_, s, e) in enumerate(segs):
         tag = word_tags.get(i, "O")
         if tag.startswith("B-"):
             if cur:
-                slots.setdefault(cur, " ".join(buf))
-            cur, buf = tag[2:], [words[i]]
+                slots.setdefault(cur, text[start:end])
+            cur, start, end = tag[2:], s, e
         elif tag.startswith("I-") and cur == tag[2:]:
-            buf.append(words[i])
+            end = e
         else:
             if cur:
-                slots.setdefault(cur, " ".join(buf))
-            cur, buf = None, []
+                slots.setdefault(cur, text[start:end])
+            cur = None
     if cur:
-        slots.setdefault(cur, " ".join(buf))
-
-    # пунктуация Whisper липнет к значениям: «1887.» → «1887»
-    slots = {k: strip_punct(v) for k, v in slots.items()}
-
-    # «ARD-7777» одним словом → ticket=ARD, num=7777
-    if "ticket" in slots and "num" not in slots:
-        m = ID_RE.match(slots["ticket"])
-        if m:
-            slots["ticket"], slots["num"] = m.group(1), m.group(2)
+        slots.setdefault(cur, text[start:end])
 
     # branch на none — это не имя ветки, а слово из посторонней речи
     # («плохо распознаёт номер ветки» → branch: номер). Потребителю такой слот

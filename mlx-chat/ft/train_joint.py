@@ -24,11 +24,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 OUT = os.path.join(HERE, "joint_model")
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
-EPOCHS = 8
+EPOCHS = 12
 BATCH = 32
 LR = 3e-4
-MAXLEN = 32
-SLOT_WEIGHT = 2.0   # слот-голова учится дольше: её сигнал реже (почти все токены O)
+MAXLEN = 48
+# Слот-голова учится дольше: её сигнал реже, почти все токены — O. После того
+# как пунктуация стала отдельными токенами, доля O выросла ещё, и веса 2.0
+# перестало хватать — номер после префикса начал теряться.
+SLOT_WEIGHT = 4.0
 
 I2I = {l: i for i, l in enumerate(jm.INTENTS)}
 T2I = {t: i for i, t in enumerate(jm.TAGS)}
