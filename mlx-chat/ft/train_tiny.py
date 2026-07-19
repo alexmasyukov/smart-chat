@@ -52,25 +52,38 @@ def main():
     print(f"примеров: {len(rows)}  |  алфавит: {len(c2i)}  |  словарь: {len(w2i)}"
           f"  |  макс слов: {max_words}")
 
-    chars, words, masks, y_int, y_tag = [], [], [], [], []
-    for r in rows:
-        ch, wi, mask = tm.encode(r["words"], c2i, w2i, max_words)
-        chars.append(ch)
-        words.append(wi)
-        masks.append(mask)
-        # обе метки потокенные; -100 на паддинге, чтобы он не влиял на лосс
-        tags = torch.full((max_words,), -100, dtype=torch.long)
-        itags = torch.full((max_words,), -100, dtype=torch.long)
-        for i, t in enumerate(r["tags"][:max_words]):
-            tags[i] = T2I[t]
-        for i, t in enumerate(r["itags"][:max_words]):
-            itags[i] = IT2I[t]
-        y_tag.append(tags)
-        y_int.append(itags)
+    # Группировка по длине: средняя фраза 9.4 слова, но 5% составных тянутся
+    # до 42, и паддинг всех до глобального максимума удваивал стоимость шага
+    # (char-RNN обрабатывает батч×ширину слов). Сортируем по длине, режем на
+    # батчи, каждый паддим по СВОЕЙ ширине. Упаковка в модели делает это
+    # безопасным: паддинг на результат не влияет, сколько его ни будь.
+    order = sorted(range(len(rows)), key=lambda i: len(rows[i]["words"]))
+    batches = [order[i:i + BATCH] for i in range(0, len(order), BATCH)]
 
-    ds = TensorDataset(torch.stack(chars), torch.stack(words), torch.stack(masks),
-                       torch.stack(y_int), torch.stack(y_tag))
-    dl = DataLoader(ds, batch_size=BATCH, shuffle=True)
+    def make_batch(idx):
+        w = max(len(rows[i]["words"]) for i in idx)
+        ch, wi, mk, yi, yt = [], [], [], [], []
+        for i in idx:
+            r = rows[i]
+            c, x, m = tm.encode(r["words"], c2i, w2i, w)
+            ch.append(c)
+            wi.append(x)
+            mk.append(m)
+            # обе метки потокенные; -100 на паддинге, чтобы он не влиял на лосс
+            tags = torch.full((w,), -100, dtype=torch.long)
+            itags = torch.full((w,), -100, dtype=torch.long)
+            for j, t in enumerate(r["tags"][:w]):
+                tags[j] = T2I[t]
+            for j, t in enumerate(r["itags"][:w]):
+                itags[j] = IT2I[t]
+            yt.append(tags)
+            yi.append(itags)
+        return (torch.stack(ch), torch.stack(wi), torch.stack(mk),
+                torch.stack(yi), torch.stack(yt))
+
+    dl = [make_batch(b) for b in batches]
+    print(f"батчей: {len(dl)}  |  средняя ширина: "
+          f"{sum(b[0].shape[1] for b in dl)/len(dl):.1f} слов (было бы {max_words})")
 
     model = tm.TinyTagger(len(c2i) + 2, len(w2i) + 2).to(DEVICE)
     n = sum(p.numel() for p in model.parameters())
@@ -84,6 +97,7 @@ def main():
     model.train()
     for ep in range(EPOCHS):
         li = lt = 0.0
+        random.shuffle(dl)          # порядок батчей случайный, состав фиксирован
         for ch, wi, mask, bi, bt in dl:
             opt.zero_grad()
             il, sl = model(ch.to(DEVICE), wi.to(DEVICE), mask.to(DEVICE))
