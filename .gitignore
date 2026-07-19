@@ -38,3 +38,4 @@ mlx-chat/ft/adapters/
 mlx-chat/ft/adapters_smoke/
 mlx-chat/ft/fused/
 mlx-chat/ft/bert_model/
+mlx-chat/ft/joint_model/
