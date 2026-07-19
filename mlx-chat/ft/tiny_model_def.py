@@ -34,6 +34,9 @@ INTENTS = ["open_adsw", "open_network", "open_components", "open_projects",
            # приложения.
            "open_network_prod", "open_adsw_prod",
            "open_network_dev", "open_adsw_dev",
+           # Папка в Finder — не стенд: «адсв на ветке 2511» это стенд,
+           # «папку адсв» это каталог на диске.
+           "open_adsw_folder", "open_network_folder",
            "none"]
 OPEN_INTENTS = [i for i in INTENTS if i != "none"]
 SLOTS = ["ticket", "num", "branch", "target"]

@@ -31,7 +31,18 @@ INTENTS = ["open_adsw", "open_network", "open_components", "open_projects",
            # переживает, и заодно каждому окружению соответствует свой URL.
            "open_network_prod", "open_adsw_prod",
            "open_network_dev", "open_adsw_dev",
+           # Папка в Finder — не то же, что стенд: «открой адсв на ветке 2511»
+           # это стенд, «открой папку адсв» это каталог на диске.
+           "open_adsw_folder", "open_network_folder",
            "none"]
+
+# Слова, по которым фраза из phrases.txt читается как «папка на диске», а не
+# стенд. Банк phrases.txt писался для старого классификатора папок, где
+# open_adsw и означал каталог; здесь он переразмечается по этим маркерам.
+FOLDER_MARKERS = ("папк", "директор", "каталог", "finder", "файндер", "финдер",
+                  "проводник")
+FOLDER_REMAP = {"open_adsw": "open_adsw_folder",
+                "open_network": "open_network_folder"}
 OPEN_INTENTS = [i for i in INTENTS if i != "none"]
 # ticket и num раздельно: «ард 7777» → ticket=ард, num=7777, чтобы приложение
 # собрало «ARD-7777» по своей конвенции. branch — произвольное имя целиком.
@@ -398,9 +409,17 @@ def build():
         w, t, it = punctuate(w, t, it)
         rows.append((w, t, it))
 
-    for intent, phrases in core.items():
-        bank = aliases.get(intent, [])
+    for intent0, phrases in core.items():
         for ph in phrases:
+            # phrases.txt писался для классификатора ПАПОК: там «открой adsw»
+            # означало каталог. Теперь open_adsw — это стенд, поэтому фразы с
+            # явным указанием на папку переезжают в *_folder, а без него
+            # остаются стендом (у ассистента это основное употребление).
+            low = ph.lower()
+            intent = intent0
+            if intent0 in FOLDER_REMAP and any(m in low for m in FOLDER_MARKERS):
+                intent = FOLDER_REMAP[intent0]
+            bank = aliases.get(intent, []) or aliases.get(intent0, [])
             w, t = autotag_phrase(ph, targets)
             it = ["O"] * len(w) if intent == "none" else tag_words(w, intent)
             rows.append((w, t, it))

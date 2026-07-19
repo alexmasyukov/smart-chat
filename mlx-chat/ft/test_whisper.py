@@ -65,6 +65,32 @@ CASES = [
     ("На ДЭВе открою ДСВ.", "open_adsw_dev", None, None),
     ("на деве ADSV открой", "open_adsw_dev", None, None),
     ("На ДЭВе открой АДСВ.", "open_adsw_dev", None, None),
+
+    # --- папки в Finder. Отличаются от стенда словом «папку»/«в проводнике».
+    ("Открой папку ADSV.", "open_adsw_folder", None, None),
+    ("Открою ADSV папку.", "open_adsw_folder", None, None),
+    ("АДС в проводнике открой.", "open_adsw_folder", None, None),
+    ("АДСВ в проводнике открой.", "open_adsw_folder", None, None),
+    ("покажи папку ADSV", "open_adsw_folder", None, None),
+    ("Перейди к папке ADSV.", "open_adsw_folder", None, None),
+    ("АДСВ папку покажи.", "open_adsw_folder", None, None),
+    ("АДСВ папку открой", "open_adsw_folder", None, None),
+    ("Открой папку нетворк.", "open_network_folder", None, None),
+    ("покажи папку network", "open_network_folder", None, None),
+    ("Нетворк в проводнике открой.", "open_network_folder", None, None),
+    ("Перейди к папке нетворк.", "open_network_folder", None, None),
+
+    # --- папка библиотеки компонентов (arenadata-ui)
+    ("открой папку библиотеки компонентов", "open_components", None, None),
+    ("Библиотеку компонентов покажи в проводнике", "open_components", None, None),
+    ("Библиотеку компонентов нашу открой в проводнике", "open_components", None, None),
+    ("папку библиотеки компонентов наших открой", "open_components", None, None),
+    ("Папку UI-кита открой.", "open_components", None, None),
+    ("папку с юай китом наших открою", "open_components", None, None),
+    ("Папку покажи с ЮАйкитом нашим.", "open_components", None, None),
+    ("Папку покажи с UI китом.", "open_components", None, None),
+    ("UI kit где наш в папке", "open_components", None, None),
+    ("Юайкит, открой папку.", "open_components", None, None),
 ]
 
 
