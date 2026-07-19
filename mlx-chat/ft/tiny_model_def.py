@@ -28,8 +28,15 @@ import torch
 import torch.nn as nn
 
 INTENTS = ["open_adsw", "open_network", "open_components", "open_projects", "none"]
+OPEN_INTENTS = [i for i in INTENTS if i != "none"]
 SLOTS = ["ticket", "num", "branch", "target"]
 TAGS = ["O"] + [f"{p}-{s}" for s in SLOTS for p in ("B", "I")]
+
+# Интент размечается ПО ТОКЕНАМ, тем же BIO, что и слоты: иначе фраза «открой
+# нетворк на 2070 и адсв на 3511» неразрешима — интент один на всю фразу, и
+# привязать номер к своей папке нечем. B- отделяет и две соседние команды с
+# одинаковым интентом.
+INTENT_TAGS = ["O"] + [f"{p}-{i}" for i in OPEN_INTENTS for p in ("B", "I")]
 
 # Та же сегментация, что у joint-модели: буквы / цифры / знаки по отдельности.
 # Именно она избавляет от разбора «ARD-2020.» регуляркой после модели.
@@ -50,7 +57,7 @@ def segment(text):
 
 
 class TinyTagger(nn.Module):
-    def __init__(self, n_chars, n_words, n_intents=len(INTENTS), n_tags=len(TAGS)):
+    def __init__(self, n_chars, n_words, n_intents=len(INTENT_TAGS), n_tags=len(TAGS)):
         super().__init__()
         self.char_emb = nn.Embedding(n_chars, CHAR_EMB, padding_idx=PAD)
         self.char_rnn = nn.LSTM(CHAR_EMB, CHAR_HID, batch_first=True, bidirectional=True)
@@ -62,21 +69,28 @@ class TinyTagger(nn.Module):
         self.intent_head = nn.Linear(2 * WORD_HID, n_intents)
 
     def forward(self, chars, words, mask):
-        """chars (B,W,C) · words (B,W) · mask (B,W) → (интент, теги слов)."""
+        """chars (B,W,C) · words (B,W) · mask (B,W) → потокенные (интент, слоты)."""
         B, W, C = chars.shape
         ce = self.char_emb(chars.reshape(B * W, C))
         _, (h, _) = self.char_rnn(ce)                      # h: (2, B*W, CHAR_HID)
         cw = torch.cat([h[0], h[1]], -1).reshape(B, W, -1)  # вектор слова из букв
 
-        x = torch.cat([cw, self.word_emb(words)], -1)
-        x, _ = self.word_rnn(self.drop(x))
-        x = self.drop(x)
+        x = self.drop(torch.cat([cw, self.word_emb(words)], -1))
 
-        slot_logits = self.slot_head(x)
-        # интент — по максимуму вдоль фразы: одного решающего слова достаточно
-        masked = x.masked_fill(~mask.unsqueeze(-1), -1e9)
-        intent_logits = self.intent_head(masked.max(dim=1).values)
-        return intent_logits, slot_logits
+        # Упаковываем по реальной длине: без этого обратный проход BiLSTM
+        # стартует с паддинга и тащит его состояние в настоящие слова. Тогда
+        # результат зависит от того, до какой длины добит батч, — то есть
+        # обучение и применение обязаны паддить одинаково. С упаковкой паддинг
+        # не влияет вовсе, и на инференсе можно считать ровно по длине фразы.
+        lengths = mask.sum(1).clamp(min=1).cpu()
+        packed = nn.utils.rnn.pack_padded_sequence(
+            x, lengths, batch_first=True, enforce_sorted=False)
+        out, _ = self.word_rnn(packed)
+        x, _ = nn.utils.rnn.pad_packed_sequence(
+            out, batch_first=True, total_length=x.shape[1])
+        x = self.drop(x)
+        # обе головы потокенные: интент размечает каждое слово, как и слоты
+        return self.intent_head(x), self.slot_head(x)
 
 
 def build_vocabs(rows, min_word_count=2):
@@ -126,40 +140,61 @@ def load(path, device="cpu"):
     return model.to(device).eval(), cfg
 
 
+def _spans(tags, n):
+    """BIO-теги → [(метка, первый токен, последний токен)]."""
+    out, cur, start = [], None, 0
+    for i in range(n):
+        tag = tags[i] if i < len(tags) else "O"
+        if tag.startswith("B-"):
+            if cur:
+                out.append((cur, start, i - 1))
+            cur, start = tag[2:], i
+        elif tag.startswith("I-") and cur == tag[2:]:
+            continue
+        else:
+            if cur:
+                out.append((cur, start, i - 1))
+            cur = None
+    if cur:
+        out.append((cur, start, n - 1))
+    return out
+
+
 @torch.no_grad()
 def predict(model, cfg, text, device="cpu"):
-    """Строка → (intent, {slot: значение}, score). Контракт как у joint-модели."""
+    """Строка → список команд: [{"intent", "slots", "score"}, ...].
+
+    Список, а не одна команда: во фразе «открой нетворк на 2070 и адсв на 3511»
+    их две, и каждый слот принадлежит своей. Пустой список = ничего не
+    распознано (бывшее none). Контракт совпадает с joint-моделью.
+    """
     segs = segment(text)
     if not segs:
-        return INTENTS[-1], {}, 1.0
+        return []
     words = [s[0] for s in segs]
-    c2i, w2i = cfg["chars"], cfg["words"]
-    ch, wi, mask = encode(words, c2i, w2i, cfg["max_words"])
+    # паддим по фактической длине, а не по максимуму обучающего набора: тот
+    # вырос до 42 из-за составных фраз, и короткий запрос считался бы впустую
+    ch, wi, mask = encode(words, cfg["chars"], cfg["words"],
+                          min(len(words), cfg["max_words"]))
     il, sl = model(ch.unsqueeze(0).to(device), wi.unsqueeze(0).to(device),
                    mask.unsqueeze(0).to(device))
 
-    probs = torch.softmax(il[0], -1)
-    best = int(probs.argmax())
-    intent, score = INTENTS[best], float(probs[best])
-    tags = [TAGS[i] for i in sl[0].argmax(-1).tolist()]
+    iprobs = torch.softmax(il[0], -1)
+    itags = [INTENT_TAGS[i] for i in iprobs.argmax(-1).tolist()]
+    stags = [TAGS[i] for i in sl[0].argmax(-1).tolist()]
 
-    # BIO-склейка: значение — срез исходной строки по offsets
-    slots, cur, start, end = {}, None, 0, 0
-    for i, (_, s, e) in enumerate(segs[:cfg["max_words"]]):
-        tag = tags[i]
-        if tag.startswith("B-"):
-            if cur:
-                slots.setdefault(cur, text[start:end])
-            cur, start, end = tag[2:], s, e
-        elif tag.startswith("I-") and cur == tag[2:]:
-            end = e
-        else:
-            if cur:
-                slots.setdefault(cur, text[start:end])
-            cur = None
-    if cur:
-        slots.setdefault(cur, text[start:end])
-
-    if intent == "none":
-        slots.pop("branch", None)
-    return intent, {k: v for k, v in slots.items() if v}, score
+    n = min(len(segs), cfg["max_words"])
+    slot_spans = _spans(stags, n)
+    commands = []
+    for intent, ci, cj in _spans(itags, n):
+        slots = {}
+        for name, si, sj in slot_spans:
+            if ci <= si <= cj:                       # слот внутри этой команды
+                slots.setdefault(name, text[segs[si][1]:segs[sj][2]])
+        conf = [float(iprobs[i].max()) for i in range(ci, cj + 1)]
+        commands.append({
+            "intent": intent,
+            "slots": {k: v for k, v in slots.items() if v},
+            "score": round(sum(conf) / len(conf), 4) if conf else 0.0,
+        })
+    return commands

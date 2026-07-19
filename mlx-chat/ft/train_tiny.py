@@ -33,13 +33,14 @@ BATCH = 64
 LR = 2e-3
 SLOT_WEIGHT = 4.0
 
-I2I = {l: i for i, l in enumerate(tm.INTENTS)}
+IT2I = {t: i for i, t in enumerate(tm.INTENT_TAGS)}
 T2I = {t: i for i, t in enumerate(tm.TAGS)}
 
 
 def build_data():
     rows = gs.build()
     holdout = {t.lower().strip() for t, _, _ in test_joint.CASES}
+    holdout |= {t.lower().strip() for t, _ in test_joint.MULTI_CASES}
     holdout |= {t.lower().strip() for t, _, _, _ in test_whisper.CASES}
     return [r for r in rows if " ".join(r["words"]).lower().strip() not in holdout]
 
@@ -57,14 +58,18 @@ def main():
         chars.append(ch)
         words.append(wi)
         masks.append(mask)
-        y_int.append(I2I[r["intent"]])
+        # обе метки потокенные; -100 на паддинге, чтобы он не влиял на лосс
         tags = torch.full((max_words,), -100, dtype=torch.long)
+        itags = torch.full((max_words,), -100, dtype=torch.long)
         for i, t in enumerate(r["tags"][:max_words]):
             tags[i] = T2I[t]
+        for i, t in enumerate(r["itags"][:max_words]):
+            itags[i] = IT2I[t]
         y_tag.append(tags)
+        y_int.append(itags)
 
     ds = TensorDataset(torch.stack(chars), torch.stack(words), torch.stack(masks),
-                       torch.tensor(y_int), torch.stack(y_tag))
+                       torch.stack(y_int), torch.stack(y_tag))
     dl = DataLoader(ds, batch_size=BATCH, shuffle=True)
 
     model = tm.TinyTagger(len(c2i) + 2, len(w2i) + 2).to(DEVICE)
@@ -73,7 +78,7 @@ def main():
 
     opt = torch.optim.AdamW(model.parameters(), lr=LR)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS)
-    ce_i = nn.CrossEntropyLoss()
+    ce_i = nn.CrossEntropyLoss(ignore_index=-100)
     ce_t = nn.CrossEntropyLoss(ignore_index=-100)
 
     model.train()
@@ -82,7 +87,8 @@ def main():
         for ch, wi, mask, bi, bt in dl:
             opt.zero_grad()
             il, sl = model(ch.to(DEVICE), wi.to(DEVICE), mask.to(DEVICE))
-            loss_i = ce_i(il, bi.to(DEVICE))
+            loss_i = ce_i(il.reshape(-1, len(tm.INTENT_TAGS)),
+                          bi.to(DEVICE).reshape(-1))
             loss_t = ce_t(sl.reshape(-1, len(tm.TAGS)), bt.to(DEVICE).reshape(-1))
             (loss_i + SLOT_WEIGHT * loss_t).backward()
             opt.step()
