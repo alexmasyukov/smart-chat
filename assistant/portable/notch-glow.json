@@ -1,0 +1,25 @@
+{
+  "outlineWidth": 64,
+  "blur": 5,
+  "corner": 0.7,
+  "falloff": 1.5,
+  "saturation": 1.4,
+  "brightness": 1.0,
+
+  "scaleX": 1.0,
+  "scaleY": 1.0,
+  "rotSec": 9,
+  "voiceScale": 0.7,
+  "idleOpacity": 0.85,
+  "voiceOpacity": 0.15,
+
+  "attack": 0.28,
+  "release": 0.16,
+  "gamma": 1.1,
+  "sensitivity": 1.0,
+
+  "useBuiltInMic": true,
+  "holdTime": 0.7,
+  "marginX": 140,
+  "marginY": 120
+}
