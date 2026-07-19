@@ -18,13 +18,17 @@ import test_joint
 import test_whisper
 import tiny_model_def as tm
 
-random.seed(42)
-torch.manual_seed(42)
+SEED = int(os.environ.get("SEED", "42"))
+random.seed(SEED)
+torch.manual_seed(SEED)
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "tiny_model")
+OUT = os.environ.get("OUT", os.path.join(HERE, "tiny_model"))
 
-DEVICE = "cpu"      # модель крошечная: на CPU быстрее, чем гонять на MPS
-EPOCHS = 40
+# MPS быстрее CPU в 7 раз (36 с против 4 мин 16 с на 40 эпохах) — замерено,
+# а не предположено: интуиция «LSTM на MPS плохо оптимизирован, модель мелкая,
+# накладные расходы съедят выигрыш» оказалась неверной.
+DEVICE = os.environ.get("DEVICE", "mps" if torch.backends.mps.is_available() else "cpu")
+EPOCHS = int(os.environ.get("EPOCHS", "40"))
 BATCH = 64
 LR = 2e-3
 SLOT_WEIGHT = 4.0
