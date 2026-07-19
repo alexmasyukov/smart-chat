@@ -44,6 +44,27 @@ CASES = [
     ("Чё ты как вообще? Жизнь-то у тебя?", "none", None, None),
     ("Создай MD-файл.", "none", None, None),
     ("Закоммить. Закоммить приложение.", "none", None, None),
+
+    # --- окружения: прод и дев. Формулировки живые, от пользователя.
+    # «на проводе» — так Whisper слышит «на проде»; «ДЭФ», «Дефо» — «дев».
+    ("Нетворк на проводе открой.", "open_network_prod", None, None),
+    ("прод-нетворк открой", "open_network_prod", None, None),
+    ("АДСВ на проводе открой", "open_adsw_prod", None, None),
+    ("Протодсв открой", "open_adsw_prod", None, None),
+    ("Прот АДСВ открой", "open_adsw_prod", None, None),
+    ("Прод адсв открой", "open_adsw_prod", None, None),
+    ("прода dsv открой", "open_adsw_prod", None, None),
+    ("Нетворк на Дэви открой.", "open_network_dev", None, None),
+    ("Девнетворк открой", "open_network_dev", None, None),
+    ("на дэви нетворк открой", "open_network_dev", None, None),
+    ("на деве network открой", "open_network_dev", None, None),
+    ("На ДЭВе открой нетворк", "open_network_dev", None, None),
+    ("АДСВ на Дэйве открой.", "open_adsw_dev", None, None),
+    ("АДСВ ДЭФ открой", "open_adsw_dev", None, None),
+    ("Дефо ДСВ открой", "open_adsw_dev", None, None),
+    ("На ДЭВе открою ДСВ.", "open_adsw_dev", None, None),
+    ("на деве ADSV открой", "open_adsw_dev", None, None),
+    ("На ДЭВе открой АДСВ.", "open_adsw_dev", None, None),
 ]
 
 

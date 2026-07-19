@@ -27,7 +27,14 @@ import re
 import torch
 import torch.nn as nn
 
-INTENTS = ["open_adsw", "open_network", "open_components", "open_projects", "none"]
+INTENTS = ["open_adsw", "open_network", "open_components", "open_projects",
+           # Окружения — отдельные интенты: Whisper склеивает окружение с
+           # проектом в одно слово («Девнетворк», «Протодсв»), а слот на
+           # половину токена не поставить. У каждого свой URL на стороне
+           # приложения.
+           "open_network_prod", "open_adsw_prod",
+           "open_network_dev", "open_adsw_dev",
+           "none"]
 OPEN_INTENTS = [i for i in INTENTS if i != "none"]
 SLOTS = ["ticket", "num", "branch", "target"]
 TAGS = ["O"] + [f"{p}-{s}" for s in SLOTS for p in ("B", "I")]
