@@ -25,16 +25,30 @@ random.seed(42)
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 INTENTS = ["open_adsw", "open_network", "open_components", "open_projects", "none"]
+OPEN_INTENTS = [i for i in INTENTS if i != "none"]
 # ticket и num раздельно: «ард 7777» → ticket=ард, num=7777, чтобы приложение
 # собрало «ARD-7777» по своей конвенции. branch — произвольное имя целиком.
 SLOTS = ["ticket", "num", "branch", "target"]
 TAGS = ["O"] + [f"{p}-{s}" for s in SLOTS for p in ("B", "I")]
 T2I = {t: i for i, t in enumerate(TAGS)}
 
+# Интент тоже размечается ПО ТОКЕНАМ, в том же BIO. Иначе фраза «открой нетворк
+# на 2070 и адсв на 3511» неразрешима: интент один на всю фразу, и привязать
+# номер к своей папке нечем. B- открывает команду, I- продолжает, O — связки и
+# посторонняя речь. BIO (а не просто метка интента на токен) нужен ради случая
+# двух команд с ОДИНАКОВЫМ интентом: «адсв на 2070 и адсв на 3511» — их границу
+# показывает именно B-.
+INTENT_TAGS = ["O"] + [f"{p}-{i}" for i in OPEN_INTENTS for p in ("B", "I")]
+IT2I = {t: i for i, t in enumerate(INTENT_TAGS)}
+
+# Связки между частями составной команды.
+CONNECTORS = ["и", "и ещё", "а также", "потом", "затем", "плюс", "а ещё", "и потом"]
+
 # Сколько примеров на шаблон: разные значения слотов дают разнообразие,
 # поэтому меньше, чем аугментаций на плоскую фразу в gen_dataset.
 PER_TEMPLATE = 34
 PER_PHRASE = 8
+MULTI_COUNT = 1400   # составных фраз («открой нетворк на 2070 и адсв на 3511»)
 
 
 def load_templates(path):
@@ -221,7 +235,7 @@ def autotag_phrase(phrase, targets):
     return words, tags
 
 
-def swap_alias(words, tags, alias_bank):
+def swap_alias(words, tags, itags, alias_bank):
     """Заменяет название проекта на другое живое написание.
 
     Вход — расшифровка Whisper, а он коверкает короткие незнакомые слова
@@ -230,7 +244,7 @@ def swap_alias(words, tags, alias_bank):
     Меняем только слова с тегом O — название проекта слотом не является.
     """
     if not alias_bank:
-        return words, tags
+        return words, tags, itags
     low = [w.lower() for w in words]
     # ищем самое длинное вхождение любого алиаса
     for alias in sorted(alias_bank, key=lambda a: -len(seg(a))):
@@ -239,19 +253,22 @@ def swap_alias(words, tags, alias_bank):
         for i in range(len(low) - n + 1):
             if low[i:i + n] == aw and all(t == "O" for t in tags[i:i + n]):
                 new = seg(random.choice(alias_bank))
+                # новое написание наследует интент заменяемого куска
+                ni = [itags[i]] + [itags[i].replace("B-", "I-")] * (len(new) - 1)
                 return (words[:i] + new + words[i + n:],
-                        tags[:i] + ["O"] * len(new) + tags[i + n:])
-    return words, tags
+                        tags[:i] + ["O"] * len(new) + tags[i + n:],
+                        itags[:i] + ni + itags[i + n:])
+    return words, tags, itags
 
 
-def punctuate(words, tags):
+def punctuate(words, tags, itags):
     """Пунктуация как в расшифровке Whisper: точка в конце, запятые внутри.
 
     На вход модели текст приходит только от Whisper, а он почти всегда ставит
     точку в конце и запятые внутри. Без этого в обучении модель видит
     «ARD 2020», а в бою получает «ARD 2020.» — и номер отваливается.
     """
-    words, tags = list(words), list(tags)
+    words, tags, itags = list(words), list(tags), list(itags)
     # знак — отдельный токен с тегом O: тогда он не прилипает к значению слота
     # и «1887.» не превращается в мусорный номер. Снимать точку постфактум не
     # нужно — модель просто не включает её в span.
@@ -260,13 +277,16 @@ def punctuate(words, tags):
         if not (tags[i] == "B-ticket" and i + 1 < len(tags) and tags[i + 1] == "B-num"):
             words.insert(i + 1, ",")
             tags.insert(i + 1, "O")
+            # запятая внутри команды не разрывает её: наследует интент соседа
+            itags.insert(i + 1, itags[i].replace("B-", "I-"))
     if random.random() < 0.65:
         words.append(random.choice([".", ".", ".", "?", "!"]))
         tags.append("O")
-    return words, tags
+        itags.append("O")
+    return words, tags, itags
 
 
-def augment(words, tags):
+def augment(words, tags, itags):
     """Аугментация с уважением к слотам.
 
     Филлеры вставляем только в позиции вне слот-спанов, опечатки — только по
@@ -274,7 +294,7 @@ def augment(words, tags):
     а перестановку слов (shuffle из gen_dataset) не делаем вовсе: живой человек
     не говорит «ветке на ард открой 1120».
     """
-    words, tags = list(words), list(tags)
+    words, tags, itags = list(words), list(tags), list(itags)
 
     # филлеры — только на границах слотов, и НЕ между ticket и num:
     # «ард пожалуйста 574» — не то, что говорят живые люди, а модель на таком
@@ -288,6 +308,8 @@ def augment(words, tags):
             i = random.choice(spots)
             words.insert(i, random.choice(gd.FILLERS))
             tags.insert(i, "O")
+            # филлер внутри команды остаётся её частью, в начале — ещё нет
+            itags.insert(i, itags[i].replace("B-", "I-") if i < len(itags) else "O")
 
     # опечатка — только по не-слотовым словам, и только если она не рвёт
     # токен надвое (gd.typo может подставить дефис, а он теперь разделитель)
@@ -304,7 +326,34 @@ def augment(words, tags):
     recased = text.split()
     if len(recased) == len(words):
         words = recased
-    return words, tags
+    return words, tags, itags
+
+
+def make_one(intent, tpl, slots, bank):
+    """Одна команда → (words, tags, itags). itags помечают её как единый span."""
+    w, t = fill(tpl, slots)
+    itags = ["O"] * len(w) if intent == "none" else tag_words(w, intent)
+    w, t, itags = swap_alias(w, t, itags, bank)
+    return augment(w, t, itags)
+
+
+def join_commands(parts):
+    """Несколько команд в одну фразу через связку.
+
+    Связка получает тег O и не входит ни в одну команду — по ней предсказание
+    и режется на части при разборе.
+    """
+    words, tags, itags = [], [], []
+    for k, (w, t, i) in enumerate(parts):
+        if k:
+            c = seg(random.choice(CONNECTORS))
+            words += c
+            tags += ["O"] * len(c)
+            itags += ["O"] * len(c)
+        words += w
+        tags += t
+        itags += i
+    return words, tags, itags
 
 
 def build():
@@ -317,30 +366,43 @@ def build():
         bank = aliases.get(intent, [])
         for tpl in tpls:
             for _ in range(PER_TEMPLATE):
-                w, t = fill(tpl, slots)
-                w, t = swap_alias(w, t, bank)
-                w, t = augment(w, t)
-                w, t = punctuate(w, t)
-                rows.append((w, t, intent))
+                w, t, it = make_one(intent, tpl, slots, bank)
+                w, t, it = punctuate(w, t, it)
+                rows.append((w, t, it))
+
+    # составные: две-три команды в одной фразе. Доля небольшая — одиночные
+    # команды остаются основным случаем, а составные должны просто работать.
+    open_tpls = [(i, tpl) for i, tpls in templates.items() if i != "none"
+                 for tpl in tpls]
+    for _ in range(MULTI_COUNT):
+        n = 2 if random.random() < 0.85 else 3
+        parts = []
+        for _ in range(n):
+            i, tpl = random.choice(open_tpls)
+            parts.append(make_one(i, tpl, slots, aliases.get(i, [])))
+        w, t, it = join_commands(parts)
+        w, t, it = punctuate(w, t, it)
+        rows.append((w, t, it))
 
     for intent, phrases in core.items():
         bank = aliases.get(intent, [])
         for ph in phrases:
             w, t = autotag_phrase(ph, targets)
-            rows.append((w, t, intent))
+            it = ["O"] * len(w) if intent == "none" else tag_words(w, intent)
+            rows.append((w, t, it))
             for _ in range(PER_PHRASE):
-                aw, at = swap_alias(w, t, bank)
-                aw, at = augment(aw, at)
-                aw, at = punctuate(aw, at)
-                rows.append((aw, at, intent))
+                aw, at, ait = swap_alias(w, t, it, bank)
+                aw, at, ait = augment(aw, at, ait)
+                aw, at, ait = punctuate(aw, at, ait)
+                rows.append((aw, at, ait))
 
     # дедуп по тексту
     seen, uniq = set(), []
-    for w, t, i in rows:
+    for w, t, it in rows:
         k = " ".join(w).lower().strip()
         if k and k not in seen:
             seen.add(k)
-            uniq.append({"words": w, "tags": t, "intent": i})
+            uniq.append({"words": w, "tags": t, "itags": it})
     random.shuffle(uniq)
     return uniq
 
@@ -351,20 +413,35 @@ def main():
     args = ap.parse_args()
 
     rows = build()
+
+    def n_cmds(r):
+        return sum(1 for t in r["itags"] if t.startswith("B-"))
+
     print(f"Всего примеров: {len(rows)}")
-    by_intent = Counter(r["intent"] for r in rows)
-    for k in INTENTS:
-        with_slot = sum(1 for r in rows if r["intent"] == k and set(r["tags"]) != {"O"})
-        print(f"  {k:18s} {by_intent[k]:5d}   из них со слотами: {with_slot}")
+    dist = Counter(n_cmds(r) for r in rows)
+    for k in sorted(dist):
+        what = "none (команд нет)" if k == 0 else f"команд в фразе: {k}"
+        print(f"  {what:24s} {dist[k]}")
+
+    print("\nТеги слотов:")
     tag_dist = Counter(t for r in rows for t in r["tags"])
-    print("\nТеги:")
     for t in TAGS:
         print(f"  {t:10s} {tag_dist[t]}")
+    print("\nТеги интентов:")
+    it_dist = Counter(t for r in rows for t in r["itags"])
+    for t in INTENT_TAGS:
+        print(f"  {t:20s} {it_dist[t]}")
 
-    print("\nПримеры:")
-    for r in rows[:6]:
-        pairs = "  ".join(f"{w}/{t}" if t != "O" else w for w, t in zip(r["words"], r["tags"]))
-        print(f"  [{r['intent']:16s}] {pairs}")
+    print("\nПримеры составных:")
+    shown = 0
+    for r in rows:
+        if n_cmds(r) >= 2:
+            print("  " + "  ".join(
+                f"{w}[{it.replace('open_','')}{'/'+t if t!='O' else ''}]" if it != "O" else w
+                for w, t, it in zip(r["words"], r["tags"], r["itags"])))
+            shown += 1
+            if shown >= 4:
+                break
 
     if args.preview:
         path = os.path.join(HERE, "data", "slots_preview.md")

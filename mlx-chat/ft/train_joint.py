@@ -33,39 +33,40 @@ MAXLEN = 48
 # перестало хватать — номер после префикса начал теряться.
 SLOT_WEIGHT = 4.0
 
-I2I = {l: i for i, l in enumerate(jm.INTENTS)}
+IT2I = {t: i for i, t in enumerate(jm.INTENT_TAGS)}
 T2I = {t: i for i, t in enumerate(jm.TAGS)}
 
 
 def build_data():
     rows = gs.build()
     holdout = {t.lower().strip() for t, _, _ in test_joint.CASES}
+    holdout |= {t.lower().strip() for t, _ in test_joint.MULTI_CASES}
     holdout |= {t.lower().strip() for t, _, _, _ in test_whisper.CASES}
     rows = [r for r in rows if " ".join(r["words"]).lower().strip() not in holdout]
     return rows
 
 
 def encode(tok, rows):
-    """Слова+теги → тензоры. Метка на первый subword слова, остальным -100."""
+    """Слова+теги → тензоры. Обе метки на первый subword слова, хвосту -100."""
     enc = tok([r["words"] for r in rows], is_split_into_words=True,
               padding="max_length", truncation=True, max_length=MAXLEN,
               return_tensors="pt")
-    labels = []
+    slot_labels, intent_labels = [], []
     for i, r in enumerate(rows):
         word_ids = enc.word_ids(i)
-        prev, seq = None, []
+        prev, sseq, iseq = None, [], []
         for wid in word_ids:
-            if wid is None:
-                seq.append(-100)                       # спецтокены и паддинг
-            elif wid != prev:
-                seq.append(T2I[r["tags"][wid]])        # первый subword слова
+            if wid is None or wid == prev:
+                sseq.append(-100)                      # спецтокены, паддинг, хвост
+                iseq.append(-100)
             else:
-                seq.append(-100)                       # хвост subword'ов
+                sseq.append(T2I[r["tags"][wid]])       # первый subword слова
+                iseq.append(IT2I[r["itags"][wid]])
             prev = wid
-        labels.append(seq)
+        slot_labels.append(sseq)
+        intent_labels.append(iseq)
     return (enc["input_ids"], enc["attention_mask"],
-            torch.tensor([I2I[r["intent"]] for r in rows]),
-            torch.tensor(labels))
+            torch.tensor(intent_labels), torch.tensor(slot_labels))
 
 
 def main():
@@ -79,7 +80,7 @@ def main():
     dl = DataLoader(TensorDataset(ids, mask, y_int, y_tag), batch_size=BATCH, shuffle=True)
 
     opt = torch.optim.AdamW(model.parameters(), lr=LR)
-    ce_int = nn.CrossEntropyLoss()
+    ce_int = nn.CrossEntropyLoss(ignore_index=-100)
     ce_tag = nn.CrossEntropyLoss(ignore_index=-100)
 
     model.train()
@@ -90,7 +91,8 @@ def main():
             b_int, b_tag = b_int.to(DEVICE), b_tag.to(DEVICE)
             opt.zero_grad()
             intent_logits, slot_logits = model(b_ids, b_mask)
-            loss_i = ce_int(intent_logits, b_int)
+            loss_i = ce_int(intent_logits.reshape(-1, len(jm.INTENT_TAGS)),
+                            b_int.reshape(-1))
             loss_t = ce_tag(slot_logits.reshape(-1, len(jm.TAGS)), b_tag.reshape(-1))
             (loss_i + SLOT_WEIGHT * loss_t).backward()
             opt.step()

@@ -80,9 +80,47 @@ CASES = [
     ("открой youtube", "none", {}),
 ]
 
+# Составные: несколько команд в одной фразе. Ожидание — список по порядку.
+MULTI_CASES = [
+    ("Открой нетворк на ветке 2070 и ADSV на ветке 3511",
+     [("open_network", {"num": "2070"}), ("open_adsw", {"num": "3511"})]),
+    ("открой адсв на ветке ард 100 и нетворк на ветке main",
+     [("open_adsw", {"ticket": "ард", "num": "100"}),
+      ("open_network", {"branch": "main"})]),
+    # две команды с ОДИНАКОВЫМ интентом — их разделяет только B-
+    ("открой адсв на ветке 111 и адсв на ветке 222",
+     [("open_adsw", {"num": "111"}), ("open_adsw", {"num": "222"})]),
+    ("покажи компоненты в идее а также проекты на ветке dev",
+     [("open_components", {"target": "в идее"}),
+      ("open_projects", {"branch": "dev"})]),
+    ("открой нетворк на ITDEV 555, потом адсв на фиче про логин",
+     [("open_network", {"ticket": "ITDEV", "num": "555"}),
+      ("open_adsw", {"branch": "про логин"})]),
+    ("открой адсв, нетворк и компоненты",
+     [("open_adsw", {}), ("open_network", {}), ("open_components", {})]),
+]
+
 
 def norm(s):
     return s.lower().strip()
+
+
+def as_expected(exp_i, exp_s):
+    """Старый формат (интент, слоты) → новый контракт: список команд."""
+    return [] if exp_i == "none" else [(exp_i, exp_s)]
+
+
+def cmp_commands(got, expected):
+    """Сравнивает список команд. expected элемент со слотами None — не проверяем."""
+    if len(got) != len(expected):
+        return False
+    for g, (ei, es) in zip(got, expected):
+        if g["intent"] != ei:
+            return False
+        if es is not None and ({k: norm(v) for k, v in g["slots"].items()} !=
+                               {k: norm(v) for k, v in es.items()}):
+            return False
+    return True
 
 
 def main():
@@ -91,35 +129,36 @@ def main():
     jm.predict(model, tok, cfg, "прогрев")
 
     t0 = time.time()
-    preds = [jm.predict(model, tok, cfg, text)[:2] for text, _, _ in CASES]
+    preds = [jm.predict(model, tok, cfg, text) for text, _, _ in CASES]
     dt = (time.time() - t0) / len(CASES)
 
-    intent_ok = slot_ok = both_ok = 0
-    fails = []
-    for (text, exp_i, exp_s), (got_i, got_s) in zip(CASES, preds):
-        i_ok = got_i == exp_i
-        s_ok = exp_s is None or ({k: norm(v) for k, v in got_s.items()} ==
-                                 {k: norm(v) for k, v in exp_s.items()})
-        intent_ok += i_ok
-        slot_ok += s_ok
-        both_ok += i_ok and s_ok
-        if not (i_ok and s_ok):
-            fails.append((text, exp_i, exp_s, got_i, got_s, i_ok, s_ok))
+    ok, fails = 0, []
+    for (text, exp_i, exp_s), got in zip(CASES, preds):
+        expected = as_expected(exp_i, exp_s)
+        if cmp_commands(got, expected):
+            ok += 1
+        else:
+            fails.append((text, expected, got))
 
     n = len(CASES)
-    print(f"=== Joint-модель на {n} held-out кейсах ===")
-    print(f"  интент:        {intent_ok}/{n} ({100*intent_ok//n}%)")
-    print(f"  слоты (точно): {slot_ok}/{n} ({100*slot_ok//n}%)")
-    print(f"  всё верно:     {both_ok}/{n} ({100*both_ok//n}%)")
-    print(f"  скорость:      {dt*1000:.2f} мс/запрос (CPU)")
+    print(f"=== Одиночные команды: {ok}/{n} ({100*ok//n}%)  "
+          f"|  {dt*1000:.2f} мс/запрос (CPU) ===")
 
-    if fails:
+    mok, mfails = 0, []
+    for text, expected in MULTI_CASES:
+        got = jm.predict(model, tok, cfg, text)
+        if cmp_commands(got, expected):
+            mok += 1
+        else:
+            mfails.append((text, expected, got))
+    print(f"=== Составные команды: {mok}/{len(MULTI_CASES)} ===")
+
+    if fails or mfails:
         print("\n=== Ошибки ===")
-        for text, ei, es, gi, gs_, i_ok, s_ok in fails:
-            what = "слот" if i_ok else ("интент" if s_ok else "интент+слот")
-            print(f"  [{what}] «{text}»")
-            print(f"        ждали: {ei}  {es}")
-            print(f"        вышло: {gi}  {gs_}")
+        for text, expected, got in fails + mfails:
+            print(f"  «{text}»")
+            print(f"        ждали: {expected}")
+            print(f"        вышло: {[(g['intent'], g['slots']) for g in got]}")
     else:
         print("\nОшибок нет.")
 

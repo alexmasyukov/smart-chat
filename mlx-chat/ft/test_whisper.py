@@ -64,10 +64,21 @@ def main():
 
     ok = 0
     fails = []
-    for (text, exp_i, exp_t, exp_n), (got_i, slots, score) in zip(CASES, preds):
+    for (text, exp_i, exp_t, exp_n), cmds in zip(CASES, preds):
+        # контракт — список команд; в этих кейсах ожидается ровно одна или ни одной
+        if exp_i == "none":
+            got_i, slots, score = "none", {}, 1.0
+            good = len(cmds) == 0
+        elif len(cmds) == 1:
+            got_i, slots, score = cmds[0]["intent"], cmds[0]["slots"], cmds[0]["score"]
+            good = None
+        else:
+            got_i = f"{len(cmds)} команд" if cmds else "none"
+            slots, score, good = {}, 0.0, False
         got_t, got_n = slots.get("ticket"), slots.get("num")
-        good = (got_i == exp_i and norm(got_t) == norm(exp_t)
-                and norm(got_n) == norm(exp_n))
+        if good is None:
+            good = (got_i == exp_i and norm(got_t) == norm(exp_t)
+                    and norm(got_n) == norm(exp_n))
         ok += good
         if not good:
             fails.append((text, exp_i, exp_t, exp_n, got_i, got_t, got_n, slots))
@@ -87,7 +98,8 @@ def main():
 
     # уверенность: потребитель применяет порог 0.7
     print("\n=== Уверенность интента ===")
-    low = [(t, i, s) for (t, _, _, _), (i, _, s) in zip(CASES, preds) if s < 0.7]
+    low = [(t, c["intent"], c["score"]) for (t, _, _, _), cmds in zip(CASES, preds)
+           for c in cmds if c["score"] < 0.7]
     if low:
         print("  ниже порога 0.7:")
         for t, i, s in low:
