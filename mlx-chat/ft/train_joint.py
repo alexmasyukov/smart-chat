@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader, TensorDataset
 import gen_slots as gs
 import joint_model_def as jm
 import test_joint
+import test_whisper
 
 random.seed(42)
 torch.manual_seed(42)
@@ -36,6 +37,7 @@ T2I = {t: i for i, t in enumerate(jm.TAGS)}
 def build_data():
     rows = gs.build()
     holdout = {t.lower().strip() for t, _, _ in test_joint.CASES}
+    holdout |= {t.lower().strip() for t, _, _, _ in test_whisper.CASES}
     rows = [r for r in rows if " ".join(r["words"]).lower().strip() not in holdout]
     return rows
 

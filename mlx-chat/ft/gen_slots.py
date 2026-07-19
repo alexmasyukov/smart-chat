@@ -38,8 +38,12 @@ PER_PHRASE = 8
 
 
 def load_templates(path):
-    """Парсит templates.txt → (templates {intent: [шаблоны]}, slots {name: [значения]})."""
-    templates, slots = {}, {}
+    """Парсит templates.txt → (templates, slots, aliases).
+
+    Секции: '# <intent>' — шаблоны, '# slot:<name>' — значения слота,
+    '# alias:<intent>' — написания названия проекта, '# service' — служебные слова.
+    """
+    templates, slots, aliases = {}, {}, {}
     bucket = None
     for line in open(path, encoding="utf-8"):
         s = line.strip()
@@ -48,13 +52,18 @@ def load_templates(path):
             token = head.split()[0] if head else ""
             if token.startswith("slot:"):
                 bucket = slots.setdefault(token[5:], [])
+            elif token.startswith("alias:"):
+                bucket = aliases.setdefault(token[6:], [])
+            elif token == "service":
+                bucket = slots.setdefault("service", [])
             elif token in INTENTS:
                 bucket = templates.setdefault(token, [])
+            # прочие '#' — пояснения внутри секции, bucket не трогаем
             continue
         if not s or bucket is None:
             continue
         bucket.append(s)
-    return templates, slots
+    return templates, slots, aliases
 
 
 # Пул для {WORD}: реальные имена и слова + псевдослова из слогов.
@@ -107,23 +116,30 @@ def ticket_value(slots):
     """Тикет → (words, tags) с РАЗДЕЛЬНЫМИ ticket и num.
 
     Живые формы записи одного и того же тикета:
-      «ард 7777»  → два слова: ticket + num  (основной случай, речь)
-      «ард-7777»  → одно слово: разделить на уровне слов нельзя, тег ticket,
-                    приложение доразберёт (это канонический ID, не текст)
-      «7777»      → голый номер без префикса
+      «ард 7777»   → ticket + num  (основной случай, так говорят вслух)
+      «ит дев 204» → многословный префикс: B-ticket I-ticket, потом num
+      «ард-7777»   → одно слово: разделить на уровне слов нельзя, тег ticket,
+                     приложение доразберёт (это канонический ID, не текст)
+      «7777»       → голый номер без префикса
     """
-    prefix = random.choice(slots["ticket"])
+    prefix = random.choice(slots["ticket"]).split()
     num = str(random.randint(1, 9999))
     mode = random.random()
-    if mode < 0.60:                       # «ард 7777» — то, что говорят вслух
-        return [prefix, num], ["B-ticket", "B-num"]
-    if mode < 0.85:                       # «ARD-7777» / «ard7777» — одно слово
-        return [prefix + random.choice(["-", "-", "_", ""]) + num], ["B-ticket"]
+    if mode < 0.62:                       # «ард 7777», «ит дев 204»
+        return prefix + [num], tag_words(prefix, "ticket") + ["B-num"]
+    if mode < 0.85 and len(prefix) == 1:  # «ARD-7777» / «ard7777» — одно слово
+        return [prefix[0] + random.choice(["-", "-", "_", ""]) + num], ["B-ticket"]
+    if mode < 0.92:                       # «1987 ITDEV» — номер впереди
+        return [num] + prefix, ["B-num"] + tag_words(prefix, "ticket")
     return [num], ["B-num"]               # «на фиче 315»
 
 
 def expand_slot(slot, slots):
     """Значение слота → (words, tags). branch умеет два режима."""
+    if slot == "service":
+        # служебное слово («фича-ветку») — тип ветки, а не имя: всегда O
+        value = random.choice(slots["service"]).split()
+        return value, ["O"] * len(value)
     if slot == "branch":
         # тикет или произвольное имя в одной и той же позиции. Имён чуть
         # больше: они разнообразнее (любое слово), тикеты же однотипны.
@@ -171,6 +187,46 @@ def autotag_phrase(phrase, targets):
     return words, tags
 
 
+def swap_alias(words, tags, alias_bank):
+    """Заменяет название проекта на другое живое написание.
+
+    Вход — расшифровка Whisper, а он коверкает короткие незнакомые слова
+    устойчиво: adsw → «ADSV», «АДСВ», «Адрес свой». Подстановка даёт каждому
+    шаблону все написания, не размножая сам банк шаблонов.
+    Меняем только слова с тегом O — название проекта слотом не является.
+    """
+    if not alias_bank:
+        return words, tags
+    low = [w.lower() for w in words]
+    # ищем самое длинное вхождение любого алиаса
+    for alias in sorted(alias_bank, key=lambda a: -len(a.split())):
+        aw = alias.lower().split()
+        n = len(aw)
+        for i in range(len(low) - n + 1):
+            if low[i:i + n] == aw and all(t == "O" for t in tags[i:i + n]):
+                new = random.choice(alias_bank).split()
+                return (words[:i] + new + words[i + n:],
+                        tags[:i] + ["O"] * len(new) + tags[i + n:])
+    return words, tags
+
+
+def punctuate(words, tags):
+    """Пунктуация как в расшифровке Whisper: точка в конце, запятые внутри.
+
+    На вход модели текст приходит только от Whisper, а он почти всегда ставит
+    точку в конце и запятые внутри. Без этого в обучении модель видит
+    «ARD 2020», а в бою получает «ARD 2020.» — и номер отваливается.
+    """
+    words = list(words)
+    if len(words) > 3 and random.random() < 0.30:
+        i = random.randrange(1, len(words) - 1)
+        if not (tags[i] == "B-ticket" and i + 1 < len(tags) and tags[i + 1] == "B-num"):
+            words[i] += ","
+    if random.random() < 0.65:
+        words[-1] += random.choice([".", ".", ".", "?", "!"])
+    return words, tags
+
+
 def augment(words, tags):
     """Аугментация с уважением к слотам.
 
@@ -210,24 +266,30 @@ def augment(words, tags):
 
 
 def build():
-    templates, slots = load_templates(os.path.join(HERE, "templates.txt"))
+    templates, slots, aliases = load_templates(os.path.join(HERE, "templates.txt"))
     core = gd.load_phrases(os.path.join(HERE, "phrases.txt"))
     targets = slots["target"]
 
     rows = []
     for intent, tpls in templates.items():
+        bank = aliases.get(intent, [])
         for tpl in tpls:
             for _ in range(PER_TEMPLATE):
                 w, t = fill(tpl, slots)
-                rows.append(augment(w, t))
-                rows[-1] = (rows[-1][0], rows[-1][1], intent)
+                w, t = swap_alias(w, t, bank)
+                w, t = augment(w, t)
+                w, t = punctuate(w, t)
+                rows.append((w, t, intent))
 
     for intent, phrases in core.items():
+        bank = aliases.get(intent, [])
         for ph in phrases:
             w, t = autotag_phrase(ph, targets)
             rows.append((w, t, intent))
             for _ in range(PER_PHRASE):
-                aw, at = augment(w, t)
+                aw, at = swap_alias(w, t, bank)
+                aw, at = augment(aw, at)
+                aw, at = punctuate(aw, at)
                 rows.append((aw, at, intent))
 
     # дедуп по тексту

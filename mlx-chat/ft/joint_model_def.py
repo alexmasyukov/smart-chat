@@ -32,7 +32,17 @@ TAGS = ["O"] + [f"{p}-{s}" for s in SLOTS for p in ("B", "I")]
 # «ARD-7777» пишется одним словом — на уровне слов его не разделить, поэтому
 # модель метит его как ticket, а здесь разбираем на части. Это разбор
 # канонического идентификатора, а не извлечение параметра из живой речи.
-ID_RE = re.compile(r"^([A-Za-zА-Яа-яЁё]+)[-_ ]?(\d+)$")
+#
+# Хвостовая пунктуация обязательна: на вход идёт расшифровка Whisper, а он
+# почти всегда ставит точку в конце — «ARD2020.» должен разбираться так же.
+# Внутренний дефис («ит-дев-204») тоже допускаем: префикс может быть составным.
+PUNCT = ".,!?;:…"
+ID_RE = re.compile(r"^([A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё-]*?)[-_ ]?(\d+)$")
+
+
+def strip_punct(s):
+    """Убирает пунктуацию с краёв значения слота: «1887.» → «1887»."""
+    return s.strip(PUNCT + " ")
 
 
 class JointClassifier(nn.Module):
@@ -70,7 +80,10 @@ def load(path, device="cpu"):
 
 @torch.no_grad()
 def predict(model, tok, cfg, text, device="cpu"):
-    """Строка → (intent, {slot: значение}). Значения — слова исходного запроса.
+    """Строка → (intent, {slot: значение}, score).
+
+    score — вероятность интента (softmax по голове интента). Нужна потребителю:
+    у ассистента есть порог уверенности, и без числа его не к чему применять.
 
     Слова режем по пробелам и подаём is_split_into_words=True — ровно так же,
     как при обучении. Это важно: обычная токенизация рвёт «ARD-4242» на три
@@ -81,14 +94,16 @@ def predict(model, tok, cfg, text, device="cpu"):
     """
     words = text.split()
     if not words:
-        return cfg["intents"][-1], {}
+        return cfg["intents"][-1], {}, 1.0
     enc = tok([words], is_split_into_words=True, truncation=True,
               max_length=32, return_tensors="pt")
     word_ids = enc.word_ids(0)
     feed = {k: v.to(device) for k, v in enc.items()}
     intent_logits, slot_logits = model(feed["input_ids"], feed["attention_mask"])
 
-    intent = cfg["intents"][int(intent_logits.argmax(-1))]
+    probs = torch.softmax(intent_logits[0], -1)
+    best = int(probs.argmax())
+    intent, score = cfg["intents"][best], float(probs[best])
     tag_ids = slot_logits[0].argmax(-1).tolist()
 
     # тег на слово — с первого subword, хвост игнорируем
@@ -115,9 +130,20 @@ def predict(model, tok, cfg, text, device="cpu"):
     if cur:
         slots.setdefault(cur, " ".join(buf))
 
+    # пунктуация Whisper липнет к значениям: «1887.» → «1887»
+    slots = {k: strip_punct(v) for k, v in slots.items()}
+
     # «ARD-7777» одним словом → ticket=ARD, num=7777
     if "ticket" in slots and "num" not in slots:
         m = ID_RE.match(slots["ticket"])
         if m:
             slots["ticket"], slots["num"] = m.group(1), m.group(2)
-    return intent, slots
+
+    # branch на none — это не имя ветки, а слово из посторонней речи
+    # («плохо распознаёт номер ветки» → branch: номер). Потребителю такой слот
+    # только мешает: он читает его как реальное имя.
+    if intent == "none":
+        slots.pop("branch", None)
+
+    slots = {k: v for k, v in slots.items() if v}
+    return intent, slots, score
