@@ -37,6 +37,9 @@ INTENTS = ["open_adsw", "open_network", "open_components", "open_projects",
            # Папка в Finder — не стенд: «адсв на ветке 2511» это стенд,
            # «папку адсв» это каталог на диске.
            "open_adsw_folder", "open_network_folder",
+           # Джира: задача по номеру (со слотами ticket+num) и доска целиком.
+           # Различие ровно в наличии номера в фразе.
+           "open_jira_task", "open_jira",
            "none"]
 OPEN_INTENTS = [i for i in INTENTS if i != "none"]
 SLOTS = ["ticket", "num", "branch", "target"]

@@ -91,6 +91,22 @@ CASES = [
     ("Папку покажи с UI китом.", "open_components", None, None),
     ("UI kit где наш в папке", "open_components", None, None),
     ("Юайкит, открой папку.", "open_components", None, None),
+
+    # --- задача в джире по номеру. Слоты те же, что у стенда: ticket + num.
+    # «джерри», «джиро», «джири» — Whisper не держит падеж и слышит имя.
+    ("Откройте задачу в джире ARD-717.", "open_jira_task", "ARD", "717"),
+    ("Открой в джире задачу 175.", "open_jira_task", None, "175"),
+    ("В джире задачу открой 1900", "open_jira_task", None, "1900"),
+    ("задачу в джерри открой 1900", "open_jira_task", None, "1900"),
+    ("919 задачу в джире открой", "open_jira_task", None, "919"),
+    ("В джире открой 175 задачу.", "open_jira_task", None, "175"),
+    ("Джири открой задачу ARD 818.", "open_jira_task", "ARD", "818"),
+
+    # --- доска целиком: номера нет, слотов нет.
+    ("Открой джиро.", "open_jira", None, None),
+    ("Открой джиру.", "open_jira", None, None),
+    ("Джиру открой, нашу", "open_jira", None, None),
+    ("Джиру открой, ношу", "open_jira", None, None),
 ]
 
 
